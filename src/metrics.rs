@@ -344,9 +344,7 @@ mod tests {
             }
             Err(e) => {
                 // May not be able to access /proc filesystem in some test environments
-                println!(
-                    "Warning: Failed to collect metrics in test environment: {e}"
-                );
+                println!("Warning: Failed to collect metrics in test environment: {e}");
             }
         }
     }
