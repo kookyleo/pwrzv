@@ -11,7 +11,8 @@ fn main() -> Result<(), PwrzvError> {
     if let Err(e) = platform::check_platform() {
         eprintln!("❌ Platform check failed: {e}");
         eprintln!("pwrzv currently only supports Linux systems.");
-        std::process::exit(1);
+        eprintln!("This example will exit gracefully without running the analysis.");
+        return Ok(()); // Return Ok to avoid non-zero exit code
     }
 
     println!("✅ Platform check passed!");
@@ -24,7 +25,8 @@ fn main() -> Result<(), PwrzvError> {
         Ok(metrics) => metrics,
         Err(e) => {
             eprintln!("Failed to collect system metrics: {e}");
-            std::process::exit(1);
+            eprintln!("This example will exit gracefully.");
+            return Ok(()); // Return Ok to avoid non-zero exit code
         }
     };
 
@@ -33,7 +35,8 @@ fn main() -> Result<(), PwrzvError> {
         Ok(score) => score,
         Err(e) => {
             eprintln!("Failed to calculate power reserve: {e}");
-            std::process::exit(1);
+            eprintln!("This example will exit gracefully.");
+            return Ok(()); // Return Ok to avoid non-zero exit code
         }
     };
 

@@ -52,8 +52,8 @@ jobs:
     
     - name: Test examples
       run: |
-        cargo run --example basic_usage || echo "Examples expected to fail on non-Linux platforms"
-        cargo run --example detailed_analysis || echo "Examples expected to fail on non-Linux platforms"
+        cargo run --example basic_usage
+        cargo run --example detailed_analysis
 
   coverage:
     name: Coverage

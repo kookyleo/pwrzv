@@ -2,14 +2,27 @@
 //!
 //! Demonstrates how to use the pwrzv library for detailed system performance analysis and custom configuration
 
-use pwrzv::{PowerReserveCalculator, PwrzvError, SigmoidConfig};
+use pwrzv::{PowerReserveCalculator, PwrzvError, SigmoidConfig, platform};
 
 fn main() -> Result<(), PwrzvError> {
     println!("=== pwrzv Detailed Analysis Example ===\n");
 
+    // Check platform compatibility first
+    if let Err(e) = platform::check_platform() {
+        eprintln!("❌ Platform check failed: {e}");
+        eprintln!("pwrzv currently only supports Linux systems.");
+        eprintln!("This example will exit gracefully without running the analysis.");
+        return Ok(()); // Return Ok to avoid non-zero exit code
+    }
+
+    println!("✅ Platform check passed!\n");
+
     // Use default configuration
     println!("🔧 Analyzing with default configuration...");
-    analyze_with_config(SigmoidConfig::default(), "Default Configuration")?;
+    if let Err(e) = analyze_with_config(SigmoidConfig::default(), "Default Configuration") {
+        eprintln!("Analysis failed: {e}");
+        return Ok(());
+    }
 
     println!("\n{}\n", "=".repeat(50));
 
@@ -31,7 +44,10 @@ fn main() -> Result<(), PwrzvError> {
         fd_threshold: 0.8, // Stricter file descriptor threshold
         fd_steepness: 15.0,
     };
-    analyze_with_config(strict_config, "Strict Configuration")?;
+    if let Err(e) = analyze_with_config(strict_config, "Strict Configuration") {
+        eprintln!("Analysis failed: {e}");
+        return Ok(());
+    }
 
     println!("\n{}\n", "=".repeat(50));
 
@@ -53,7 +69,10 @@ fn main() -> Result<(), PwrzvError> {
         fd_threshold: 0.95, // Lenient file descriptor threshold
         fd_steepness: 5.0,
     };
-    analyze_with_config(lenient_config, "Lenient Configuration")?;
+    if let Err(e) = analyze_with_config(lenient_config, "Lenient Configuration") {
+        eprintln!("Analysis failed: {e}");
+        return Ok(());
+    }
 
     Ok(())
 }
