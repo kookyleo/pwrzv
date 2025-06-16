@@ -1,40 +1,43 @@
-//! Platform detection module
+//! Platform compatibility checking module
 //!
-//! Provides platform compatibility checks to ensure the library only runs on Linux-like systems.
+//! Provides platform detection and compatibility verification functions.
 
 use crate::error::{PwrzvError, PwrzvResult};
 
-/// Check if the current platform is a Linux-like system
+/// Check if the current platform is supported
 pub fn check_platform() -> PwrzvResult<()> {
-    if cfg!(target_os = "linux") {
+    if is_supported_platform() {
         Ok(())
     } else {
-        Err(PwrzvError::unsupported_platform(get_platform_name()))
+        Err(PwrzvError::UnsupportedPlatform {
+            platform: get_platform_name().to_string(),
+        })
     }
+}
+
+/// Check if the current platform is supported
+pub fn is_supported_platform() -> bool {
+    cfg!(target_os = "linux") || cfg!(target_os = "macos")
+}
+
+/// Legacy function for backward compatibility (Linux-only check)
+pub fn is_linux_like() -> bool {
+    cfg!(target_os = "linux")
 }
 
 /// Get the current platform name
 pub fn get_platform_name() -> &'static str {
     if cfg!(target_os = "linux") {
         "Linux"
-    } else if cfg!(target_os = "windows") {
-        "Windows"
     } else if cfg!(target_os = "macos") {
         "macOS"
+    } else if cfg!(target_os = "windows") {
+        "Windows"
     } else if cfg!(target_os = "freebsd") {
         "FreeBSD"
-    } else if cfg!(target_os = "openbsd") {
-        "OpenBSD"
-    } else if cfg!(target_os = "netbsd") {
-        "NetBSD"
     } else {
         "Unknown"
     }
-}
-
-/// Check if the current platform is Linux-like
-pub fn is_linux_like() -> bool {
-    cfg!(target_os = "linux")
 }
 
 #[cfg(test)]
@@ -43,16 +46,29 @@ mod tests {
 
     #[test]
     fn test_platform_detection() {
-        // This test will have different results on different platforms
         let platform_name = get_platform_name();
         assert!(!platform_name.is_empty());
 
-        if cfg!(target_os = "linux") {
-            assert!(is_linux_like());
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            assert!(is_supported_platform());
             assert!(check_platform().is_ok());
-        } else {
-            assert!(!is_linux_like());
+        }
+
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            assert!(!is_supported_platform());
             assert!(check_platform().is_err());
         }
+    }
+
+    #[test]
+    fn test_legacy_compatibility() {
+        // Test that the legacy function still works
+        #[cfg(target_os = "linux")]
+        assert!(is_linux_like());
+
+        #[cfg(not(target_os = "linux"))]
+        assert!(!is_linux_like());
     }
 }

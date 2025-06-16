@@ -1,105 +1,35 @@
-//! System metrics module
+//! Linux platform implementation for system metrics collection
 //!
-//! Provides system resource monitoring metrics definitions and data collection functions.
+//! Provides Linux-specific implementations using `/proc` filesystem for collecting
+//! various system performance metrics.
 
+use super::MetricsCollector;
 use crate::error::{PwrzvError, PwrzvResult};
-use crate::platform;
-use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
-/// System metrics data structure
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SystemMetrics {
-    /// Total CPU utilization (%)
-    pub cpu_usage: f32,
-    /// CPU I/O wait time (%)
-    pub cpu_iowait: f32,
-    /// Available memory percentage (%)
-    pub mem_available: f32,
-    /// Swap usage percentage (%)
-    pub swap_usage: f32,
-    /// Disk I/O utilization (%)
-    pub disk_usage: f32,
-    /// Network I/O utilization (%)
-    pub net_usage: f32,
-    /// File descriptor usage percentage (%)
-    pub fd_usage: f32,
-}
+/// Linux-specific metrics collector implementation
+pub struct LinuxMetricsCollector;
 
-impl Default for SystemMetrics {
-    fn default() -> Self {
-        SystemMetrics {
-            cpu_usage: 0.0,
-            cpu_iowait: 0.0,
-            mem_available: 100.0,
-            swap_usage: 0.0,
-            disk_usage: 0.0,
-            net_usage: 0.0,
-            fd_usage: 0.0,
-        }
-    }
-}
-
-impl SystemMetrics {
-    /// Create a new system metrics instance
-    pub fn new() -> Self {
-        Self::default()
+impl MetricsCollector for LinuxMetricsCollector {
+    fn collect_cpu_stats(&self) -> PwrzvResult<(f32, f32)> {
+        read_cpu_stats()
     }
 
-    /// Collect all system metrics
-    pub fn collect() -> PwrzvResult<Self> {
-        // First check platform compatibility
-        platform::check_platform()?;
-
-        let mut metrics = SystemMetrics::new();
-
-        // Collect various metrics, use default values and log warnings if any fails
-        match read_cpu_stats() {
-            Ok((cpu_usage, cpu_iowait)) => {
-                metrics.cpu_usage = cpu_usage;
-                metrics.cpu_iowait = cpu_iowait;
-            }
-            Err(e) => eprintln!("Warning: Failed to read CPU stats: {e}"),
-        }
-
-        match read_mem_stats() {
-            Ok((mem_available, swap_usage)) => {
-                metrics.mem_available = mem_available;
-                metrics.swap_usage = swap_usage;
-            }
-            Err(e) => eprintln!("Warning: Failed to read memory stats: {e}"),
-        }
-
-        match read_disk_stats() {
-            Ok(disk_usage) => metrics.disk_usage = disk_usage,
-            Err(e) => eprintln!("Warning: Failed to read disk stats: {e}"),
-        }
-
-        match read_net_stats() {
-            Ok(net_usage) => metrics.net_usage = net_usage,
-            Err(e) => eprintln!("Warning: Failed to read network stats: {e}"),
-        }
-
-        match read_fd_stats() {
-            Ok(fd_usage) => metrics.fd_usage = fd_usage,
-            Err(e) => eprintln!("Warning: Failed to read file descriptor stats: {e}"),
-        }
-
-        Ok(metrics)
+    fn collect_memory_stats(&self) -> PwrzvResult<(f32, f32)> {
+        read_memory_stats()
     }
 
-    /// Validate the validity of metrics data
-    pub fn validate(&self) -> bool {
-        let is_valid_percentage = |val: f32| (0.0..=100.0).contains(&val);
+    fn collect_disk_stats(&self) -> PwrzvResult<f32> {
+        read_disk_stats()
+    }
 
-        is_valid_percentage(self.cpu_usage)
-            && is_valid_percentage(self.cpu_iowait)
-            && is_valid_percentage(self.mem_available)
-            && is_valid_percentage(self.swap_usage)
-            && is_valid_percentage(self.disk_usage)
-            && is_valid_percentage(self.net_usage)
-            && is_valid_percentage(self.fd_usage)
+    fn collect_network_stats(&self) -> PwrzvResult<f32> {
+        read_network_stats()
+    }
+
+    fn collect_fd_stats(&self) -> PwrzvResult<f32> {
+        read_fd_stats()
     }
 }
 
@@ -149,7 +79,7 @@ fn read_cpu_stats() -> PwrzvResult<(f32, f32)> {
 }
 
 /// Read memory information from /proc/meminfo
-fn read_mem_stats() -> PwrzvResult<(f32, f32)> {
+fn read_memory_stats() -> PwrzvResult<(f32, f32)> {
     let file = File::open("/proc/meminfo")
         .map_err(|_| PwrzvError::resource_access_error("/proc/meminfo"))?;
     let reader = BufReader::new(file);
@@ -233,7 +163,7 @@ fn read_disk_stats() -> PwrzvResult<f32> {
 }
 
 /// Read network I/O statistics from /proc/net/dev
-fn read_net_stats() -> PwrzvResult<f32> {
+fn read_network_stats() -> PwrzvResult<f32> {
     let file = File::open("/proc/net/dev")
         .map_err(|_| PwrzvError::resource_access_error("/proc/net/dev"))?;
     let reader = BufReader::new(file);
@@ -312,54 +242,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_system_metrics_default() {
-        let metrics = SystemMetrics::default();
-        assert_eq!(metrics.cpu_usage, 0.0);
-        assert_eq!(metrics.mem_available, 100.0);
-        assert!(metrics.validate());
+    fn test_linux_collector_creation() {
+        let collector = LinuxMetricsCollector;
+        // Just verify we can create the collector
+        assert_eq!(std::mem::size_of_val(&collector), 0); // Zero-sized type
     }
 
     #[test]
-    fn test_system_metrics_validation() {
-        let mut metrics = SystemMetrics::default();
-        assert!(metrics.validate());
+    fn test_cpu_stats_parsing() {
+        // This test would require mocking /proc/stat, so we just verify the function exists
+        // In a real test environment, you might want to create temporary files for testing
+        let collector = LinuxMetricsCollector;
 
-        metrics.cpu_usage = -1.0;
-        assert!(!metrics.validate());
-
-        metrics.cpu_usage = 101.0;
-        assert!(!metrics.validate());
-
-        metrics.cpu_usage = 50.0;
-        assert!(metrics.validate());
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn test_collect_metrics_on_linux() {
-        // This test only runs on Linux
-        match SystemMetrics::collect() {
-            Ok(metrics) => {
-                assert!(metrics.validate());
+        // Test that the method exists and returns the correct type
+        match collector.collect_cpu_stats() {
+            Ok((cpu_usage, cpu_iowait)) => {
+                assert!(cpu_usage >= 0.0 && cpu_usage <= 100.0);
+                assert!(cpu_iowait >= 0.0 && cpu_iowait <= 100.0);
             }
-            Err(e) => {
-                // May not be able to access /proc filesystem in some test environments
-                println!("Warning: Failed to collect metrics in test environment: {e}");
+            Err(_) => {
+                // Expected in test environment without proper /proc filesystem
+                println!("CPU stats collection failed in test environment");
             }
         }
     }
 
-    #[cfg(not(target_os = "linux"))]
     #[test]
-    fn test_collect_metrics_on_non_linux() {
-        // This test runs on non-Linux platforms
-        let result = SystemMetrics::collect();
-        assert!(result.is_err());
+    fn test_memory_stats_parsing() {
+        let collector = LinuxMetricsCollector;
 
-        if let Err(PwrzvError::UnsupportedPlatform { .. }) = result {
-            // Expected error type
-        } else {
-            panic!("Expected UnsupportedPlatform error");
+        match collector.collect_memory_stats() {
+            Ok((mem_available, swap_usage)) => {
+                assert!(mem_available >= 0.0 && mem_available <= 100.0);
+                assert!(swap_usage >= 0.0 && swap_usage <= 100.0);
+            }
+            Err(_) => {
+                // Expected in test environment without proper /proc filesystem
+                println!("Memory stats collection failed in test environment");
+            }
         }
     }
 }

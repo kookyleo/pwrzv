@@ -9,12 +9,12 @@
 
 ![pwrzv](./assets/Pwrzv-in-Rolls-Royce.jpg)
 
-A Rolls-Royce–inspired performance reserve meter for Linux systems.
+A Rolls-Royce–inspired performance reserve meter for Linux and macOS systems.
 Elegant, minimal, and focused on what really matters: how much performance your machine has left to give.
 
 ## 🛠 What is pwrzv?
 
-Inspired by the Power Reserve gauge in Rolls-Royce cars — which shows how much engine power is still available — pwrzv brings the same philosophy to Linux systems. Instead of showing raw usage, it estimates how much headroom remains in your system's core resources.
+Inspired by the Power Reserve gauge in Rolls-Royce cars — which shows how much engine power is still available — pwrzv brings the same philosophy to Unix-like systems. Instead of showing raw usage, it estimates how much headroom remains in your system's core resources.
 
 It provides a simple 0–5 score, calculated from multiple real-time metrics:
 
@@ -87,12 +87,17 @@ cargo install pwrzv
 
 ## 🖥️ Platform Support
 
-**pwrzv only supports Linux systems.** Other platforms will display an error message.
+**pwrzv supports Linux and macOS systems** for now. Other platforms will display an error message.
 
 Check platform compatibility:
 ```bash
 pwrzv --check-platform
 ```
+
+### Platform-Specific Implementation
+
+- **Linux**: Uses `/proc` filesystem for direct system metrics access
+- **macOS**: Uses system commands (`sysctl`, `vm_stat`, `iostat`, etc.) for metrics collection
 
 ## 🔧 Usage
 
@@ -178,7 +183,7 @@ The scoring system uses sigmoid functions to map resource utilization to a 0-5 s
 
 ### How It Works
 
-1. **Resource Collection**: Gathers metrics from `/proc` filesystem
+1. **Resource Collection**: Gathers metrics from `/proc` filesystem or system commands
 2. **Normalization**: Converts raw metrics to 0-1 scale
 3. **Sigmoid Transformation**: Applies configurable thresholds and curves
 4. **Bottleneck Detection**: Takes the minimum score (worst resource)

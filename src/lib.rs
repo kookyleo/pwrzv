@@ -1,8 +1,8 @@
-//! # pwrzv - Linux System Power Reserve Meter
+//! # pwrzv - Cross-Platform System Power Reserve Meter
 //!
-//! A Rolls-Royce–inspired performance reserve meter for Linux systems.
+//! A Rolls-Royce–inspired performance reserve meter for Linux and macOS systems.
 //!
-//! This library provides real-time monitoring and evaluation of Linux system resources,
+//! This library provides real-time monitoring and evaluation of system resources,
 //! mimicking the Power Reserve gauge in Rolls-Royce cars to calculate system's remaining
 //! performance headroom.
 //!
@@ -13,10 +13,13 @@
 //! - Disk and network I/O monitoring
 //! - File descriptor usage statistics
 //! - Intelligent scoring algorithm based on Sigmoid functions
+//! - Cross-platform support with optimized implementations
 //!
 //! ## Platform Support
 //!
-//! This library only supports Linux-like systems. Other platforms will return errors.
+//! - **Linux**: Direct `/proc` filesystem access for optimal performance
+//! - **macOS**: System command integration for comprehensive metrics
+//! - **Others**: Graceful error handling for unsupported platforms
 //!
 //! ## Usage Examples
 //!

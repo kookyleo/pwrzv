@@ -13,7 +13,9 @@ pub enum PwrzvError {
     IoError(#[from] io::Error),
 
     /// Unsupported platform error
-    #[error("Unsupported platform: {platform}. This library only supports Linux-like systems.")]
+    #[error(
+        "Unsupported platform: {platform}. This library only supports Linux and macOS for now."
+    )]
     UnsupportedPlatform { platform: String },
 
     /// Data parsing error
