@@ -94,12 +94,16 @@ impl PowerReserveCalculator {
         let component_scores = self.calculate_component_scores(&normalized_metrics);
 
         // Take the lowest component score as final score (reflecting bottleneck effect)
-        let min_score = component_scores
+        // Note: component_scores represent "pressure" (0-1), we need to convert to "reserve" (1-0)
+        let min_pressure = component_scores
             .iter()
             .fold(f32::INFINITY, |a, &b| a.min(b));
 
+        // Convert pressure to reserve: high pressure = low reserve, low pressure = high reserve
+        let max_reserve = 1.0 - min_pressure;
+
         // Map to 0-5 score
-        let score = (min_score * 5.0).round() as u8;
+        let score = (max_reserve * 5.0).round() as u8;
         Ok(score.min(5))
     }
 
@@ -114,23 +118,25 @@ impl PowerReserveCalculator {
         // Calculate component scores
         let component_scores = self.calculate_component_scores(&normalized_metrics);
 
-        let min_score = component_scores
+        let min_pressure = component_scores
             .iter()
             .fold(f32::INFINITY, |a, &b| a.min(b));
 
-        let final_score = (min_score * 5.0).round() as u8;
+        let max_reserve = 1.0 - min_pressure;
+
+        let final_score = (max_reserve * 5.0).round() as u8;
 
         Ok(DetailedScore {
             final_score: final_score.min(5),
             level: PowerReserveLevel::from_score(final_score.min(5)),
             component_scores: ComponentScores {
-                cpu: (component_scores[0] * 5.0).round() as u8,
-                iowait: (component_scores[1] * 5.0).round() as u8,
-                memory: (component_scores[2] * 5.0).round() as u8,
-                swap: (component_scores[3] * 5.0).round() as u8,
-                disk: (component_scores[4] * 5.0).round() as u8,
-                network: (component_scores[5] * 5.0).round() as u8,
-                file_descriptor: (component_scores[6] * 5.0).round() as u8,
+                cpu: ((1.0 - component_scores[0]) * 5.0).round() as u8,
+                iowait: ((1.0 - component_scores[1]) * 5.0).round() as u8,
+                memory: ((1.0 - component_scores[2]) * 5.0).round() as u8,
+                swap: ((1.0 - component_scores[3]) * 5.0).round() as u8,
+                disk: ((1.0 - component_scores[4]) * 5.0).round() as u8,
+                network: ((1.0 - component_scores[5]) * 5.0).round() as u8,
+                file_descriptor: ((1.0 - component_scores[6]) * 5.0).round() as u8,
             },
             bottleneck: self.identify_bottleneck(metrics),
         })
@@ -205,7 +211,8 @@ impl PowerReserveCalculator {
 
     /// Sigmoid function implementation
     ///
-    /// Map input value to [0, 1] range, used for calculating resource pressure score
+    /// Map input value to [0, 1] range, representing resource pressure score
+    /// where 0 = no pressure, 1 = high pressure
     fn sigmoid(&self, x: f32, x0: f32, k: f32) -> f32 {
         1.0 / (1.0 + (-k * (x - x0)).exp())
     }
