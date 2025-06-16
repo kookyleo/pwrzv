@@ -338,18 +338,18 @@ mod tests {
             fd_usage: 5.0,       // Very low FD usage
         };
 
-        // if cfg!(target_os = "linux") {
-        // Test actual calculation only on Linux
-        match calculator.calculate_power_reserve(&metrics) {
-            Ok(score) => {
-                // With all very low usage, we should get a good score
-                assert!(score >= 3, "Expected score >= 3, got {score}");
-            }
-            Err(e) => {
-                println!("Warning: Test failed due to platform check: {e}");
+        if cfg!(target_os = "linux") {
+            // Test actual calculation only on Linux
+            match calculator.calculate_power_reserve(&metrics) {
+                Ok(score) => {
+                    // With all very low usage, we should get a good score
+                    assert!(score >= 3, "Expected score >= 3, got {score}");
+                }
+                Err(e) => {
+                    println!("Warning: Test failed due to platform check: {e}");
+                }
             }
         }
-        // }
     }
 
     #[test]
@@ -366,17 +366,17 @@ mod tests {
             fd_usage: 95.0,     // Very high FD usage
         };
 
-        // if cfg!(target_os = "linux") {
-        match calculator.calculate_power_reserve(&metrics) {
-            Ok(score) => {
-                // With all very high usage, we should get a low score
-                assert!(score <= 2, "Expected score <= 2, got {score}");
-            }
-            Err(e) => {
-                println!("Warning: Test failed due to platform check: {e}");
+        if cfg!(target_os = "linux") {
+            match calculator.calculate_power_reserve(&metrics) {
+                Ok(score) => {
+                    // With all very high usage, we should get a low score
+                    assert!(score <= 2, "Expected score <= 2, got {score}");
+                }
+                Err(e) => {
+                    println!("Warning: Test failed due to platform check: {e}");
+                }
             }
         }
-        // }
     }
 
     #[test]
