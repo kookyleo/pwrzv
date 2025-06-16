@@ -257,8 +257,8 @@ mod tests {
         // Test that the method exists and returns the correct type
         match collector.collect_cpu_stats() {
             Ok((cpu_usage, cpu_iowait)) => {
-                assert!(cpu_usage >= 0.0 && cpu_usage <= 100.0);
-                assert!(cpu_iowait >= 0.0 && cpu_iowait <= 100.0);
+                assert!((0.0..=100.0).contains(&cpu_usage));
+                assert!((0.0..=100.0).contains(&cpu_iowait));
             }
             Err(_) => {
                 // Expected in test environment without proper /proc filesystem
@@ -273,8 +273,8 @@ mod tests {
 
         match collector.collect_memory_stats() {
             Ok((mem_available, swap_usage)) => {
-                assert!(mem_available >= 0.0 && mem_available <= 100.0);
-                assert!(swap_usage >= 0.0 && swap_usage <= 100.0);
+                assert!((0.0..=100.0).contains(&mem_available));
+                assert!((0.0..=100.0).contains(&swap_usage));
             }
             Err(_) => {
                 // Expected in test environment without proper /proc filesystem
