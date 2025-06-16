@@ -171,6 +171,7 @@ print_success "All checks passed!"
 # 9. Commit version update
 print_info "9. Committing version update..."
 git add Cargo.toml
+git add Cargo.lock
 if git diff --cached --quiet; then
     print_warning "No changes to commit, version might already be up to date"
 else
