@@ -86,6 +86,7 @@ jobs:
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         slug: kookyleo/pwrzv
+        fail_ci_if_error: false  # Don't fail CI if Codecov upload fails
 
   security:
     name: Security audit

@@ -2,8 +2,7 @@
 //!
 //! Demonstrates how to use the pwrzv library for detailed system performance analysis and custom configuration
 
-use pwrzv::{PowerReserveCalculator, SigmoidConfig, PwrzvError};
-use serde_json;
+use pwrzv::{PowerReserveCalculator, PwrzvError, SigmoidConfig};
 
 fn main() -> Result<(), PwrzvError> {
     println!("=== pwrzv Detailed Analysis Example ===\n");
@@ -17,19 +16,19 @@ fn main() -> Result<(), PwrzvError> {
     // Use custom strict configuration
     println!("🔧 Analyzing with custom strict configuration...");
     let strict_config = SigmoidConfig {
-        cpu_threshold: 0.7,        // Stricter CPU threshold (70%)
-        cpu_steepness: 15.0,       // Steeper response curve
-        iowait_threshold: 0.3,     // Stricter I/O wait threshold
+        cpu_threshold: 0.7,    // Stricter CPU threshold (70%)
+        cpu_steepness: 15.0,   // Steeper response curve
+        iowait_threshold: 0.3, // Stricter I/O wait threshold
         iowait_steepness: 15.0,
-        memory_threshold: 0.9,     // Stricter memory threshold
+        memory_threshold: 0.9, // Stricter memory threshold
         memory_steepness: 15.0,
-        swap_threshold: 0.3,       // Stricter Swap threshold
+        swap_threshold: 0.3, // Stricter Swap threshold
         swap_steepness: 15.0,
-        disk_threshold: 0.9,       // Stricter disk threshold
+        disk_threshold: 0.9, // Stricter disk threshold
         disk_steepness: 15.0,
-        network_threshold: 0.8,    // Stricter network threshold
+        network_threshold: 0.8, // Stricter network threshold
         network_steepness: 15.0,
-        fd_threshold: 0.8,         // Stricter file descriptor threshold
+        fd_threshold: 0.8, // Stricter file descriptor threshold
         fd_steepness: 15.0,
     };
     analyze_with_config(strict_config, "Strict Configuration")?;
@@ -39,19 +38,19 @@ fn main() -> Result<(), PwrzvError> {
     // Use lenient configuration
     println!("🔧 Analyzing with lenient configuration...");
     let lenient_config = SigmoidConfig {
-        cpu_threshold: 0.95,       // Lenient CPU threshold (95%)
-        cpu_steepness: 5.0,        // Gentle response curve
-        iowait_threshold: 0.7,     // Lenient I/O wait threshold
+        cpu_threshold: 0.95,   // Lenient CPU threshold (95%)
+        cpu_steepness: 5.0,    // Gentle response curve
+        iowait_threshold: 0.7, // Lenient I/O wait threshold
         iowait_steepness: 5.0,
-        memory_threshold: 0.98,    // Lenient memory threshold
+        memory_threshold: 0.98, // Lenient memory threshold
         memory_steepness: 5.0,
-        swap_threshold: 0.7,       // Lenient Swap threshold
+        swap_threshold: 0.7, // Lenient Swap threshold
         swap_steepness: 5.0,
-        disk_threshold: 0.98,      // Lenient disk threshold
+        disk_threshold: 0.98, // Lenient disk threshold
         disk_steepness: 5.0,
-        network_threshold: 0.95,   // Lenient network threshold
+        network_threshold: 0.95, // Lenient network threshold
         network_steepness: 5.0,
-        fd_threshold: 0.95,        // Lenient file descriptor threshold
+        fd_threshold: 0.95, // Lenient file descriptor threshold
         fd_steepness: 5.0,
     };
     analyze_with_config(lenient_config, "Lenient Configuration")?;
@@ -64,18 +63,42 @@ fn analyze_with_config(config: SigmoidConfig, config_name: &str) -> Result<(), P
     let metrics = calculator.collect_metrics()?;
     let detailed_score = calculator.calculate_detailed_score(&metrics)?;
 
-    println!("📊 {} Analysis Results:", config_name);
-    println!("   Overall Score: {} / 5 ({})", detailed_score.final_score, detailed_score.level);
-    println!("   System Bottleneck: {}", detailed_score.bottleneck);
-
-    println!("\n📈 Detailed Component Scores:");
-    println!("   CPU:              {} / 5", detailed_score.component_scores.cpu);
-    println!("   I/O Wait:         {} / 5", detailed_score.component_scores.iowait);
-    println!("   Memory:           {} / 5", detailed_score.component_scores.memory);
-    println!("   Swap:             {} / 5", detailed_score.component_scores.swap);
-    println!("   Disk I/O:         {} / 5", detailed_score.component_scores.disk);
-    println!("   Network I/O:      {} / 5", detailed_score.component_scores.network);
-    println!("   File Descriptors: {} / 5", detailed_score.component_scores.file_descriptor);
+    println!("📊 {config_name} Analysis Results:");
+    println!(
+        "  Final Score: {} ({})",
+        detailed_score.final_score, detailed_score.level
+    );
+    println!("  Main Bottleneck: {}", detailed_score.bottleneck);
+    println!("  Component Scores:");
+    println!(
+        "    CPU:              {} / 5",
+        detailed_score.component_scores.cpu
+    );
+    println!(
+        "    I/O Wait:         {} / 5",
+        detailed_score.component_scores.iowait
+    );
+    println!(
+        "    Memory:           {} / 5",
+        detailed_score.component_scores.memory
+    );
+    println!(
+        "    Swap:             {} / 5",
+        detailed_score.component_scores.swap
+    );
+    println!(
+        "    Disk I/O:         {} / 5",
+        detailed_score.component_scores.disk
+    );
+    println!(
+        "    Network I/O:      {} / 5",
+        detailed_score.component_scores.network
+    );
+    println!(
+        "    File Descriptors: {} / 5",
+        detailed_score.component_scores.file_descriptor
+    );
+    println!();
 
     // Output detailed information in JSON format
     if std::env::var("PWRZV_JSON_OUTPUT").is_ok() {
@@ -147,4 +170,4 @@ fn print_recommendations(detailed_score: &pwrzv::DetailedScore) {
         println!("      • Monitor resource usage trends");
         println!("      • Plan ahead for system scaling");
     }
-} 
+}

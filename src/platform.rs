@@ -46,7 +46,7 @@ mod tests {
         // This test will have different results on different platforms
         let platform_name = get_platform_name();
         assert!(!platform_name.is_empty());
-        
+
         if cfg!(target_os = "linux") {
             assert!(is_linux_like());
             assert!(check_platform().is_ok());
@@ -55,4 +55,4 @@ mod tests {
             assert!(check_platform().is_err());
         }
     }
-} 
+}

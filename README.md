@@ -1,5 +1,12 @@
 # pwrzv
 
+[![CI](https://github.com/kookyleo/pwrzv/workflows/CI/badge.svg)](https://github.com/kookyleo/pwrzv/actions)
+[![codecov](https://codecov.io/gh/kookyleo/pwrzv/graph/badge.svg?token=CqfBIyojDm)](https://codecov.io/gh/kookyleo/pwrzv)
+[![Crates.io](https://img.shields.io/crates/v/pwrzv.svg)](https://crates.io/crates/pwrzv)
+[![Documentation](https://docs.rs/pwrzv/badge.svg)](https://docs.rs/pwrzv)
+[![License](https://img.shields.io/crates/l/pwrzv.svg)](https://github.com/kookyleo/pwrzv#license)
+
+
 ![pwrzv](./assets/Pwrzv-in-Rolls-Royce.jpg)
 
 A Rolls-Royce–inspired performance reserve meter for Linux systems.

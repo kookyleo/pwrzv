@@ -1,7 +1,7 @@
 //! # pwrzv - Linux System Power Reserve Meter
 //!
 //! A Rolls-Royce–inspired performance reserve meter for Linux systems.
-//! 
+//!
 //! This library provides real-time monitoring and evaluation of Linux system resources,
 //! mimicking the Power Reserve gauge in Rolls-Royce cars to calculate system's remaining
 //! performance headroom.
@@ -68,14 +68,14 @@
 //! }
 //! ```
 
-pub mod metrics;
 pub mod calculator;
-pub mod platform;
 pub mod error;
+pub mod metrics;
+pub mod platform;
 
+pub use calculator::{ComponentScores, DetailedScore, PowerReserveCalculator, SigmoidConfig};
 pub use error::{PwrzvError, PwrzvResult};
-pub use metrics::SystemMetrics; 
-pub use calculator::{PowerReserveCalculator, DetailedScore, ComponentScores, SigmoidConfig};
+pub use metrics::SystemMetrics;
 pub use platform::{check_platform, get_platform_name, is_linux_like};
 
 use std::fmt;
@@ -132,13 +132,28 @@ mod tests {
 
     #[test]
     fn test_power_reserve_level_from_score() {
-        assert_eq!(PowerReserveLevel::from_score(0), PowerReserveLevel::Critical);
-        assert_eq!(PowerReserveLevel::from_score(1), PowerReserveLevel::Critical);
+        assert_eq!(
+            PowerReserveLevel::from_score(0),
+            PowerReserveLevel::Critical
+        );
+        assert_eq!(
+            PowerReserveLevel::from_score(1),
+            PowerReserveLevel::Critical
+        );
         assert_eq!(PowerReserveLevel::from_score(2), PowerReserveLevel::Low);
-        assert_eq!(PowerReserveLevel::from_score(3), PowerReserveLevel::Moderate);
+        assert_eq!(
+            PowerReserveLevel::from_score(3),
+            PowerReserveLevel::Moderate
+        );
         assert_eq!(PowerReserveLevel::from_score(4), PowerReserveLevel::Good);
-        assert_eq!(PowerReserveLevel::from_score(5), PowerReserveLevel::Excellent);
-        assert_eq!(PowerReserveLevel::from_score(10), PowerReserveLevel::Excellent); // Out of range
+        assert_eq!(
+            PowerReserveLevel::from_score(5),
+            PowerReserveLevel::Excellent
+        );
+        assert_eq!(
+            PowerReserveLevel::from_score(10),
+            PowerReserveLevel::Excellent
+        ); // Out of range
     }
 
     #[test]
@@ -153,11 +168,11 @@ mod tests {
     fn test_full_integration() {
         // Full integration test (only runs on Linux)
         let calculator = PowerReserveCalculator::new();
-        
+
         match calculator.collect_metrics() {
             Ok(metrics) => {
                 assert!(metrics.validate());
-                
+
                 match calculator.calculate_power_reserve(&metrics) {
                     Ok(score) => {
                         assert!(score <= 5);

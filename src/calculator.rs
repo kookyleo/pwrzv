@@ -2,10 +2,10 @@
 //!
 //! Provides power reserve scoring calculation functions based on multiple system metrics.
 
+use crate::PowerReserveLevel;
 use crate::error::{PwrzvError, PwrzvResult};
 use crate::metrics::SystemMetrics;
 use crate::platform;
-use crate::PowerReserveLevel;
 use serde::{Deserialize, Serialize};
 
 /// Power reserve calculator
@@ -94,7 +94,8 @@ impl PowerReserveCalculator {
         let component_scores = self.calculate_component_scores(&normalized_metrics);
 
         // Take the lowest component score as final score (reflecting bottleneck effect)
-        let min_score = component_scores.iter()
+        let min_score = component_scores
+            .iter()
             .fold(f32::INFINITY, |a, &b| a.min(b));
 
         // Map to 0-5 score
@@ -106,14 +107,15 @@ impl PowerReserveCalculator {
     pub fn calculate_detailed_score(&self, metrics: &SystemMetrics) -> PwrzvResult<DetailedScore> {
         // Validate platform and metrics
         self.validate_prerequisites(metrics)?;
-        
+
         // Normalize metrics
         let normalized_metrics = self.normalize_metrics(metrics);
 
         // Calculate component scores
         let component_scores = self.calculate_component_scores(&normalized_metrics);
 
-        let min_score = component_scores.iter()
+        let min_score = component_scores
+            .iter()
             .fold(f32::INFINITY, |a, &b| a.min(b));
 
         let final_score = (min_score * 5.0).round() as u8;
@@ -138,12 +140,12 @@ impl PowerReserveCalculator {
     fn validate_prerequisites(&self, metrics: &SystemMetrics) -> PwrzvResult<()> {
         // Check platform compatibility
         platform::check_platform()?;
-        
+
         // Validate metrics data
         if !metrics.validate() {
             return Err(PwrzvError::calculation_error("Invalid metrics data"));
         }
-        
+
         Ok(())
     }
 
@@ -163,13 +165,41 @@ impl PowerReserveCalculator {
     /// Calculate component scores using sigmoid functions
     fn calculate_component_scores(&self, normalized_metrics: &[f32; 7]) -> [f32; 7] {
         [
-            self.sigmoid(normalized_metrics[0], self.config.cpu_threshold, self.config.cpu_steepness),
-            self.sigmoid(normalized_metrics[1], self.config.iowait_threshold, self.config.iowait_steepness),
-            self.sigmoid(1.0 - normalized_metrics[2], self.config.memory_threshold, self.config.memory_steepness), // Note: higher memory availability is better
-            self.sigmoid(normalized_metrics[3], self.config.swap_threshold, self.config.swap_steepness),
-            self.sigmoid(normalized_metrics[4], self.config.disk_threshold, self.config.disk_steepness),
-            self.sigmoid(normalized_metrics[5], self.config.network_threshold, self.config.network_steepness),
-            self.sigmoid(normalized_metrics[6], self.config.fd_threshold, self.config.fd_steepness),
+            self.sigmoid(
+                normalized_metrics[0],
+                self.config.cpu_threshold,
+                self.config.cpu_steepness,
+            ),
+            self.sigmoid(
+                normalized_metrics[1],
+                self.config.iowait_threshold,
+                self.config.iowait_steepness,
+            ),
+            self.sigmoid(
+                1.0 - normalized_metrics[2],
+                self.config.memory_threshold,
+                self.config.memory_steepness,
+            ), // Note: higher memory availability is better
+            self.sigmoid(
+                normalized_metrics[3],
+                self.config.swap_threshold,
+                self.config.swap_steepness,
+            ),
+            self.sigmoid(
+                normalized_metrics[4],
+                self.config.disk_threshold,
+                self.config.disk_steepness,
+            ),
+            self.sigmoid(
+                normalized_metrics[5],
+                self.config.network_threshold,
+                self.config.network_steepness,
+            ),
+            self.sigmoid(
+                normalized_metrics[6],
+                self.config.fd_threshold,
+                self.config.fd_steepness,
+            ),
         ]
     }
 
@@ -275,16 +305,16 @@ mod tests {
     #[test]
     fn test_sigmoid_function() {
         let calculator = PowerReserveCalculator::new();
-        
+
         // Test sigmoid function basic behavior
         let result1 = calculator.sigmoid(0.0, 0.5, 10.0);
         let result2 = calculator.sigmoid(0.5, 0.5, 10.0);
         let result3 = calculator.sigmoid(1.0, 0.5, 10.0);
-        
+
         assert!(result1 < result2);
         assert!(result2 < result3);
-        assert!(result1 >= 0.0 && result1 <= 1.0);
-        assert!(result3 >= 0.0 && result3 <= 1.0);
+        assert!((0.0..=1.0).contains(&result1));
+        assert!((0.0..=1.0).contains(&result3));
     }
 
     #[test]
@@ -307,7 +337,7 @@ mod tests {
                     assert!(score >= 4); // Should be high score
                 }
                 Err(e) => {
-                    println!("Warning: Test failed due to platform check: {}", e);
+                    println!("Warning: Test failed due to platform check: {e}");
                 }
             }
         }
@@ -332,7 +362,7 @@ mod tests {
                     assert!(score <= 2); // Should be low score
                 }
                 Err(e) => {
-                    println!("Warning: Test failed due to platform check: {}", e);
+                    println!("Warning: Test failed due to platform check: {e}");
                 }
             }
         }
@@ -341,7 +371,7 @@ mod tests {
     #[test]
     fn test_identify_bottleneck() {
         let calculator = PowerReserveCalculator::new();
-        
+
         let metrics_no_bottleneck = SystemMetrics {
             cpu_usage: 10.0,
             cpu_iowait: 1.0,
@@ -351,10 +381,10 @@ mod tests {
             net_usage: 1.0,
             fd_usage: 5.0,
         };
-        
+
         let bottleneck = calculator.identify_bottleneck(&metrics_no_bottleneck);
         assert_eq!(bottleneck, "None");
-        
+
         let metrics_cpu_bottleneck = SystemMetrics {
             cpu_usage: 95.0,
             cpu_iowait: 1.0,
@@ -364,7 +394,7 @@ mod tests {
             net_usage: 1.0,
             fd_usage: 5.0,
         };
-        
+
         let bottleneck = calculator.identify_bottleneck(&metrics_cpu_bottleneck);
         assert!(bottleneck.contains("CPU"));
     }
@@ -387,4 +417,4 @@ mod tests {
             assert!(result.is_err());
         }
     }
-} 
+}

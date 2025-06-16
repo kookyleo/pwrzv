@@ -53,14 +53,14 @@ impl SystemMetrics {
         platform::check_platform()?;
 
         let mut metrics = SystemMetrics::new();
-        
+
         // Collect various metrics, use default values and log warnings if any fails
         match read_cpu_stats() {
             Ok((cpu_usage, cpu_iowait)) => {
                 metrics.cpu_usage = cpu_usage;
                 metrics.cpu_iowait = cpu_iowait;
             }
-            Err(e) => eprintln!("Warning: Failed to read CPU stats: {}", e),
+            Err(e) => eprintln!("Warning: Failed to read CPU stats: {e}"),
         }
 
         match read_mem_stats() {
@@ -68,22 +68,22 @@ impl SystemMetrics {
                 metrics.mem_available = mem_available;
                 metrics.swap_usage = swap_usage;
             }
-            Err(e) => eprintln!("Warning: Failed to read memory stats: {}", e),
+            Err(e) => eprintln!("Warning: Failed to read memory stats: {e}"),
         }
 
         match read_disk_stats() {
             Ok(disk_usage) => metrics.disk_usage = disk_usage,
-            Err(e) => eprintln!("Warning: Failed to read disk stats: {}", e),
+            Err(e) => eprintln!("Warning: Failed to read disk stats: {e}"),
         }
 
         match read_net_stats() {
             Ok(net_usage) => metrics.net_usage = net_usage,
-            Err(e) => eprintln!("Warning: Failed to read network stats: {}", e),
+            Err(e) => eprintln!("Warning: Failed to read network stats: {e}"),
         }
 
         match read_fd_stats() {
             Ok(fd_usage) => metrics.fd_usage = fd_usage,
-            Err(e) => eprintln!("Warning: Failed to read file descriptor stats: {}", e),
+            Err(e) => eprintln!("Warning: Failed to read file descriptor stats: {e}"),
         }
 
         Ok(metrics)
@@ -91,8 +91,8 @@ impl SystemMetrics {
 
     /// Validate the validity of metrics data
     pub fn validate(&self) -> bool {
-        let is_valid_percentage = |val: f32| val >= 0.0 && val <= 100.0;
-        
+        let is_valid_percentage = |val: f32| (0.0..=100.0).contains(&val);
+
         is_valid_percentage(self.cpu_usage)
             && is_valid_percentage(self.cpu_iowait)
             && is_valid_percentage(self.mem_available)
@@ -105,10 +105,10 @@ impl SystemMetrics {
 
 /// Read CPU statistics from /proc/stat
 fn read_cpu_stats() -> PwrzvResult<(f32, f32)> {
-    let file = File::open("/proc/stat")
-        .map_err(|_| PwrzvError::resource_access_error("/proc/stat"))?;
+    let file =
+        File::open("/proc/stat").map_err(|_| PwrzvError::resource_access_error("/proc/stat"))?;
     let reader = BufReader::new(file);
-    
+
     let line = reader
         .lines()
         .next()
@@ -125,8 +125,9 @@ fn read_cpu_stats() -> PwrzvResult<(f32, f32)> {
     }
 
     let parse_cpu_field = |index: usize| -> PwrzvResult<u64> {
-        parts[index].parse::<u64>()
-            .map_err(|_| PwrzvError::parse_error(&format!("Invalid CPU field at index {}", index)))
+        parts[index]
+            .parse::<u64>()
+            .map_err(|_| PwrzvError::parse_error(&format!("Invalid CPU field at index {index}")))
     };
 
     let user = parse_cpu_field(1)?;
@@ -136,7 +137,7 @@ fn read_cpu_stats() -> PwrzvResult<(f32, f32)> {
     let iowait = parse_cpu_field(5)?;
 
     let total = user + nice + system + idle + iowait;
-    
+
     if total == 0 {
         return Ok((0.0, 0.0));
     }
@@ -208,7 +209,11 @@ fn read_disk_stats() -> PwrzvResult<f32> {
 
         // Only count real disk devices (exclude partitions and virtual devices)
         let device_name = parts[2];
-        if device_name.starts_with("sd") || device_name.starts_with("nvme") || device_name.starts_with("hd") {
+        if device_name.starts_with("sd")
+            || device_name.starts_with("nvme")
+            || device_name.starts_with("hd")
+        {
+            #[allow(clippy::collapsible_if)]
             if let Ok(io_time) = parts[13].parse::<u64>() {
                 total_io_time += io_time;
                 device_count += 1;
@@ -237,17 +242,24 @@ fn read_net_stats() -> PwrzvResult<f32> {
 
     for line in reader.lines() {
         let line = line.map_err(PwrzvError::from)?;
-        
+
         // Skip lines containing lo (loopback) in interface name
         if line.contains("lo:") {
             continue;
         }
 
         // Find real network interfaces
-        if line.contains("eth") || line.contains("enp") || line.contains("ens") || line.contains("wlan") {
+        if line.contains("eth")
+            || line.contains("enp")
+            || line.contains("ens")
+            || line.contains("wlan")
+        {
             let parts: Vec<&str> = line.split_whitespace().collect();
+            #[allow(clippy::collapsible_if)]
             if parts.len() >= 10 {
-                if let (Ok(rx_bytes), Ok(tx_bytes)) = (parts[1].parse::<u64>(), parts[9].parse::<u64>()) {
+                if let (Ok(rx_bytes), Ok(tx_bytes)) =
+                    (parts[1].parse::<u64>(), parts[9].parse::<u64>())
+                {
                     total_bytes += rx_bytes + tx_bytes;
                 }
             }
@@ -275,12 +287,16 @@ fn read_fd_stats() -> PwrzvResult<f32> {
 
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.len() < 3 {
-        return Err(PwrzvError::parse_error("Invalid file descriptor stats format"));
+        return Err(PwrzvError::parse_error(
+            "Invalid file descriptor stats format",
+        ));
     }
 
-    let used = parts[0].parse::<f32>()
+    let used = parts[0]
+        .parse::<f32>()
         .map_err(|_| PwrzvError::parse_error("Invalid file descriptor used count"))?;
-    let max = parts[2].parse::<f32>()
+    let max = parts[2]
+        .parse::<f32>()
         .map_err(|_| PwrzvError::parse_error("Invalid file descriptor max count"))?;
 
     if max <= 0.0 {
@@ -328,7 +344,10 @@ mod tests {
             }
             Err(e) => {
                 // May not be able to access /proc filesystem in some test environments
-                println!("Warning: Failed to collect metrics in test environment: {}", e);
+                println!(
+                    "Warning: Failed to collect metrics in test environment: {}",
+                    e
+                );
             }
         }
     }
@@ -339,11 +358,11 @@ mod tests {
         // This test runs on non-Linux platforms
         let result = SystemMetrics::collect();
         assert!(result.is_err());
-        
+
         if let Err(PwrzvError::UnsupportedPlatform { .. }) = result {
             // Expected error type
         } else {
             panic!("Expected UnsupportedPlatform error");
         }
     }
-} 
+}
