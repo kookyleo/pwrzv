@@ -180,7 +180,7 @@ mod tests {
                         assert!(!level.description().is_empty());
                     }
                     Err(e) => {
-                        println!("Warning: Calculate power reserve failed: {}", e);
+                        println!("Warning: Calculate power reserve failed: {e}");
                     }
                 }
 
@@ -191,12 +191,12 @@ mod tests {
                         assert!(detailed.component_scores.cpu <= 5);
                     }
                     Err(e) => {
-                        println!("Warning: Calculate detailed score failed: {}", e);
+                        println!("Warning: Calculate detailed score failed: {e}");
                     }
                 }
             }
             Err(e) => {
-                println!("Warning: Integration test failed to collect metrics: {}", e);
+                println!("Warning: Integration test failed to collect metrics: {e}");
             }
         }
     }
