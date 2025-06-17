@@ -1,6 +1,6 @@
 [package]
 name = "pwrzv"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 description = "A Rolls-Royce–inspired performance reserve meter for Linux systems"
 license = "MIT"
