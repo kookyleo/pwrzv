@@ -12,6 +12,17 @@
 A Rolls-Royce–inspired performance reserve meter for Linux and macOS systems.
 Elegant, minimal, and focused on what really matters: how much performance your machine has left to give.
 
+## ⚠️ Beta Stage Notice
+
+**This library is currently in Beta stage and not yet fully mature.**
+
+- Parameter tuning may not be precise enough and might need adjustment for specific systems
+- API and behavior may change in future versions
+- We welcome your feedback and contributions through [Issues](https://github.com/kookyleo/pwrzv/issues) and [Pull Requests](https://github.com/kookyleo/pwrzv/pulls)
+- Please test thoroughly before using in production environments
+
+Your feedback is crucial for improving this project!
+
 ## 🛠 What is pwrzv?
 
 Inspired by the Power Reserve gauge in Rolls-Royce cars — which shows how much engine power is still available — pwrzv brings the same philosophy to Unix-like systems. Instead of showing raw usage, it estimates how much headroom remains in your system's core resources.
@@ -22,7 +33,7 @@ It provides a simple 0–5 score, calculated from multiple real-time metrics:
 - **Memory availability**
 - **Swap activity**
 - **Disk I/O**
-- **Network throughput**
+- **Network throughput and packet loss**
 - **File descriptor consumption**
 
 All inputs are weighted and transformed via sigmoid functions to reflect practical bottlenecks, not just raw numbers.
@@ -188,6 +199,145 @@ The scoring system uses sigmoid functions to map resource utilization to a 0-5 s
 3. **Sigmoid Transformation**: Applies configurable thresholds and curves
 4. **Bottleneck Detection**: Takes the minimum score (worst resource)
 5. **Final Scoring**: Maps to 0-5 range with level descriptions
+
+## 🧮 Numerical Calculation Methods
+
+pwrzv employs sophisticated mathematical algorithms to convert raw system metrics into meaningful power reserve scores:
+
+### Sigmoid Function Transformation
+
+The core calculation uses the **sigmoid function** to transform linear resource utilization into a smooth 0-1 scale:
+
+```
+f(x) = 1 / (1 + e^(-k * (x - x₀)))
+```
+
+Where:
+- **x**: Raw metric value (0-1 range after normalization)
+- **x₀ (midpoint)**: The threshold where the metric begins significantly impacting the score
+- **k (steepness)**: Controls the curve's steepness; higher values create more dramatic score changes
+
+### Multi-Stage Processing Pipeline
+
+1. **Raw Data Collection**: Platform-specific metric gathering (Linux: `/proc` filesystem, macOS: system commands)
+2. **Normalization**: Convert raw values to 0-1 scale for consistent processing
+3. **Sigmoid Transformation**: Apply individual sigmoid curves to each metric based on its characteristics
+4. **Bottleneck Analysis**: Identify the worst-performing resource (minimum score)
+5. **Final Mapping**: Transform the 0-1 result to the 0-5 Power Reserve scale
+
+### Adaptive Thresholds
+
+Each metric uses carefully tuned parameters:
+- **CPU metrics**: Balanced sensitivity for both usage spikes and sustained load
+- **Memory metrics**: Higher thresholds to account for normal OS caching behavior  
+- **I/O metrics**: Moderate sensitivity to distinguish between light and heavy workloads
+- **Network metrics**: Separate handling for bandwidth utilization vs. packet loss sensitivity
+
+This mathematical approach ensures that pwrzv provides intuitive, actionable scores that reflect real system performance bottlenecks rather than raw utilization percentages.
+
+## ⚙️ Environment Variable Configuration
+
+pwrzv supports customizing sigmoid function parameters for each metric via environment variables to adapt to different system characteristics and use cases.
+
+### macOS Platform Environment Variables
+
+```bash
+# CPU usage configuration (default: midpoint=0.60, steepness=8.0)
+export PWRZV_MACOS_CPU_USAGE_MIDPOINT=0.60
+export PWRZV_MACOS_CPU_USAGE_STEEPNESS=8.0
+
+# CPU load configuration (default: midpoint=1.2, steepness=5.0)
+export PWRZV_MACOS_CPU_LOAD_MIDPOINT=1.2
+export PWRZV_MACOS_CPU_LOAD_STEEPNESS=5.0
+
+# Memory usage configuration (default: midpoint=0.85, steepness=20.0)
+export PWRZV_MACOS_MEMORY_USAGE_MIDPOINT=0.85
+export PWRZV_MACOS_MEMORY_USAGE_STEEPNESS=20.0
+
+# Memory compression configuration (default: midpoint=0.60, steepness=15.0)
+export PWRZV_MACOS_MEMORY_COMPRESSED_MIDPOINT=0.60
+export PWRZV_MACOS_MEMORY_COMPRESSED_STEEPNESS=15.0
+
+# Disk I/O configuration (default: midpoint=0.70, steepness=10.0)
+export PWRZV_MACOS_DISK_IO_MIDPOINT=0.70
+export PWRZV_MACOS_DISK_IO_STEEPNESS=10.0
+
+# Network bandwidth configuration (default: midpoint=0.80, steepness=6.0)
+export PWRZV_MACOS_NETWORK_MIDPOINT=0.80
+export PWRZV_MACOS_NETWORK_STEEPNESS=6.0
+
+# Network packet loss configuration (default: midpoint=0.01, steepness=50.0)
+export PWRZV_MACOS_NETWORK_DROPPED_MIDPOINT=0.01
+export PWRZV_MACOS_NETWORK_DROPPED_STEEPNESS=50.0
+
+# File descriptor configuration (default: midpoint=0.90, steepness=30.0)
+export PWRZV_MACOS_FD_MIDPOINT=0.90
+export PWRZV_MACOS_FD_STEEPNESS=30.0
+
+# Process count configuration (default: midpoint=0.80, steepness=12.0)
+export PWRZV_MACOS_PROCESS_MIDPOINT=0.80
+export PWRZV_MACOS_PROCESS_STEEPNESS=12.0
+```
+
+### Linux Platform Environment Variables
+
+```bash
+# CPU usage configuration (default: midpoint=0.65, steepness=8.0)
+export PWRZV_LINUX_CPU_USAGE_MIDPOINT=0.65
+export PWRZV_LINUX_CPU_USAGE_STEEPNESS=8.0
+
+# CPU I/O wait configuration (default: midpoint=0.20, steepness=20.0)
+export PWRZV_LINUX_CPU_IOWAIT_MIDPOINT=0.20
+export PWRZV_LINUX_CPU_IOWAIT_STEEPNESS=20.0
+
+# CPU load configuration (default: midpoint=1.2, steepness=5.0)
+export PWRZV_LINUX_CPU_LOAD_MIDPOINT=1.2
+export PWRZV_LINUX_CPU_LOAD_STEEPNESS=5.0
+
+# Memory usage configuration (default: midpoint=0.85, steepness=18.0)
+export PWRZV_LINUX_MEMORY_USAGE_MIDPOINT=0.85
+export PWRZV_LINUX_MEMORY_USAGE_STEEPNESS=18.0
+
+# Memory pressure configuration (default: midpoint=0.30, steepness=12.0)
+export PWRZV_LINUX_MEMORY_PRESSURE_MIDPOINT=0.30
+export PWRZV_LINUX_MEMORY_PRESSURE_STEEPNESS=12.0
+
+# Disk I/O configuration (default: midpoint=0.70, steepness=10.0)
+export PWRZV_LINUX_DISK_IO_MIDPOINT=0.70
+export PWRZV_LINUX_DISK_IO_STEEPNESS=10.0
+
+# Network bandwidth configuration (default: midpoint=0.80, steepness=6.0)
+export PWRZV_LINUX_NETWORK_MIDPOINT=0.80
+export PWRZV_LINUX_NETWORK_STEEPNESS=6.0
+
+# Network packet loss configuration (default: midpoint=0.01, steepness=50.0)
+export PWRZV_LINUX_NETWORK_DROPPED_MIDPOINT=0.01
+export PWRZV_LINUX_NETWORK_DROPPED_STEEPNESS=50.0
+
+# File descriptor configuration (default: midpoint=0.90, steepness=25.0)
+export PWRZV_LINUX_FD_MIDPOINT=0.90
+export PWRZV_LINUX_FD_STEEPNESS=25.0
+
+# Process count configuration (default: midpoint=0.80, steepness=12.0)
+export PWRZV_LINUX_PROCESS_MIDPOINT=0.80
+export PWRZV_LINUX_PROCESS_STEEPNESS=12.0
+```
+
+### Parameter Meanings
+
+- **midpoint**: Sigmoid function midpoint value, representing the threshold where this metric starts significantly affecting the score
+- **steepness**: Sigmoid function steepness, higher values make the curve steeper and score changes more dramatic
+
+### Usage Example
+
+```bash
+# Adjust CPU threshold for high-performance server
+export PWRZV_LINUX_CPU_USAGE_MIDPOINT=0.80
+export PWRZV_LINUX_CPU_USAGE_STEEPNESS=15.0
+
+# Run pwrzv
+pwrzv --detailed
+```
 
 ## 🧪 Philosophy
 

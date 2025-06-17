@@ -2,8 +2,11 @@ use crate::error::{PwrzvError, PwrzvResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::process::Command;
 use std::time::{Duration, Instant};
 use tokio::time;
+
+const SAMPLE_INTERVAL: u64 = 500; // 500ms
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LinuxSystemMetrics {
@@ -35,6 +38,10 @@ pub struct LinuxSystemMetrics {
     /// Network bandwidth utilization: `used_bandwidth / max_bandwidth`
     /// Range [0.0, 1.0], approaching 1.0 means link is saturated
     pub network_bandwidth_ratio: f32,
+
+    /// Network dropped packets ratio: `dropped_packets / total_packets`
+    /// Range [0.0, 1.0], approaching 1.0 means network is saturated
+    pub network_dropped_packets_ratio: f32,
 
     /// File descriptor usage ratio: `used_fd / max_fd`
     /// Range [0.0, 1.0], approaching 1.0 means connection/file handles are exhausted
@@ -70,6 +77,10 @@ struct DiskStat {
 struct NetworkStat {
     rx_bytes: u64,
     tx_bytes: u64,
+    rx_packets: u64,
+    tx_packets: u64,
+    rx_dropped: u64,
+    tx_dropped: u64,
 }
 
 impl LinuxSystemMetrics {
@@ -98,7 +109,7 @@ impl LinuxSystemMetrics {
         let (cpu_usage_ratio, cpu_io_wait_ratio, cpu_load_ratio) = cpu_result?;
         let (memory_usage_ratio, memory_pressure_ratio) = memory_result?;
         let disk_io_ratio = disk_result?;
-        let network_bandwidth_ratio = network_result?;
+        let (network_bandwidth_ratio, network_dropped_packets_ratio) = network_result?;
         let fd_usage_ratio = fd_result?;
         let process_count_ratio = process_result?;
 
@@ -110,6 +121,7 @@ impl LinuxSystemMetrics {
             memory_pressure_ratio,
             disk_io_ratio,
             network_bandwidth_ratio,
+            network_dropped_packets_ratio,
             fd_usage_ratio,
             process_count_ratio,
         })
@@ -122,7 +134,7 @@ impl LinuxSystemMetrics {
         let _start_time = Instant::now();
 
         // Wait for sampling interval
-        time::sleep(Duration::from_millis(500)).await;
+        time::sleep(Duration::from_millis(SAMPLE_INTERVAL)).await;
 
         // Second sampling
         let stat2 = Self::read_cpu_stat()?;
@@ -149,7 +161,7 @@ impl LinuxSystemMetrics {
         let disk_stats1 = Self::read_disk_stats()?;
 
         // Wait for sampling interval
-        time::sleep(Duration::from_millis(500)).await;
+        time::sleep(Duration::from_millis(SAMPLE_INTERVAL)).await;
 
         // Second sampling
         let disk_stats2 = Self::read_disk_stats()?;
@@ -158,19 +170,23 @@ impl LinuxSystemMetrics {
         Self::calculate_disk_utilization(&disk_stats1, &disk_stats2)
     }
 
-    /// Collect network bandwidth metrics (requires sampling interval)
-    async fn collect_network_metrics() -> PwrzvResult<f32> {
+    /// Collect network bandwidth and dropped packets metrics (requires sampling interval)
+    async fn collect_network_metrics() -> PwrzvResult<(f32, f32)> {
         // First sampling
         let net_stats1 = Self::read_network_stats()?;
 
         // Wait for sampling interval
-        time::sleep(Duration::from_millis(500)).await;
+        time::sleep(Duration::from_millis(SAMPLE_INTERVAL)).await;
 
         // Second sampling
         let net_stats2 = Self::read_network_stats()?;
 
-        // Calculate network bandwidth utilization
-        Self::calculate_network_utilization(&net_stats1, &net_stats2)
+        // Calculate network bandwidth utilization and dropped packets ratio
+        let bandwidth_ratio = Self::calculate_network_utilization(&net_stats1, &net_stats2)?;
+        let dropped_packets_ratio =
+            Self::calculate_network_dropped_packets(&net_stats1, &net_stats2)?;
+
+        Ok((bandwidth_ratio, dropped_packets_ratio))
     }
 
     /// Collect file descriptor metrics
@@ -411,8 +427,7 @@ impl LinuxSystemMetrics {
             if let Some(stat1) = stats1.get(device) {
                 let io_time_diff = stat2.io_time_ms.saturating_sub(stat1.io_time_ms);
 
-                // Assume sampling interval is 500ms, calculate utilization
-                let utilization = (io_time_diff as f32 / 500.0).min(1.0);
+                let utilization = (io_time_diff as f32 / SAMPLE_INTERVAL as f32).min(1.0);
 
                 total_utilization += utilization;
                 device_count += 1;
@@ -444,12 +459,26 @@ impl LinuxSystemMetrics {
                     let stats = line[colon_pos + 1..].trim();
                     let fields: Vec<&str> = stats.split_whitespace().collect();
 
-                    if fields.len() >= 9 {
+                    // Format: bytes packets errs drop fifo frame compressed multicast | bytes packets errs drop fifo colls carrier compressed
+                    if fields.len() >= 16 {
                         let rx_bytes = fields[0].parse().unwrap_or(0);
+                        let rx_packets = fields[1].parse().unwrap_or(0);
+                        let rx_dropped = fields[3].parse().unwrap_or(0); // drop field
                         let tx_bytes = fields[8].parse().unwrap_or(0);
+                        let tx_packets = fields[9].parse().unwrap_or(0);
+                        let tx_dropped = fields[11].parse().unwrap_or(0); // drop field
 
-                        network_stats
-                            .insert(interface.to_string(), NetworkStat { rx_bytes, tx_bytes });
+                        network_stats.insert(
+                            interface.to_string(),
+                            NetworkStat {
+                                rx_bytes,
+                                tx_bytes,
+                                rx_packets,
+                                tx_packets,
+                                rx_dropped,
+                                tx_dropped,
+                            },
+                        );
                     }
                 }
             }
@@ -459,27 +488,146 @@ impl LinuxSystemMetrics {
     }
 
     /// Calculate network bandwidth utilization
+    /// Returns the maximum utilization across all active interfaces
     fn calculate_network_utilization(
         stats1: &HashMap<String, NetworkStat>,
         stats2: &HashMap<String, NetworkStat>,
     ) -> PwrzvResult<f32> {
-        let mut total_bytes_per_sec = 0u64;
+        let mut max_utilization = 0.0f32;
 
         for (interface, stat2) in stats2 {
             if let Some(stat1) = stats1.get(interface) {
                 let rx_diff = stat2.rx_bytes.saturating_sub(stat1.rx_bytes);
                 let tx_diff = stat2.tx_bytes.saturating_sub(stat1.tx_bytes);
 
-                // Calculate bytes per second (sampling interval 500ms)
-                total_bytes_per_sec += (rx_diff + tx_diff) * 2;
+                // Calculate bytes per second
+                let bytes_per_sec = (rx_diff + tx_diff) * 1000 / SAMPLE_INTERVAL;
+
+                // Get actual interface speed from system
+                let interface_capacity = Self::get_interface_speed(interface);
+
+                if interface_capacity > 0 {
+                    let utilization =
+                        (bytes_per_sec as f64 / interface_capacity as f64).min(1.0) as f32;
+                    max_utilization = max_utilization.max(utilization);
+                }
             }
         }
 
-        // Assume gigabit network (1 Gbps = 125 MB/s)
-        let gigabit_bytes_per_sec = 125_000_000u64;
-        let utilization = (total_bytes_per_sec as f64 / gigabit_bytes_per_sec as f64).min(1.0);
+        Ok(max_utilization)
+    }
 
-        Ok(utilization as f32)
+    /// Calculate network dropped packets ratio
+    /// Returns the maximum dropped packets ratio across all active interfaces
+    fn calculate_network_dropped_packets(
+        stats1: &HashMap<String, NetworkStat>,
+        stats2: &HashMap<String, NetworkStat>,
+    ) -> PwrzvResult<f32> {
+        let mut max_dropped_ratio = 0.0f32;
+
+        for (interface, stat2) in stats2 {
+            if let Some(stat1) = stats1.get(interface) {
+                // Calculate packet differences
+                let rx_packets_diff = stat2.rx_packets.saturating_sub(stat1.rx_packets);
+                let tx_packets_diff = stat2.tx_packets.saturating_sub(stat1.tx_packets);
+                let rx_dropped_diff = stat2.rx_dropped.saturating_sub(stat1.rx_dropped);
+                let tx_dropped_diff = stat2.tx_dropped.saturating_sub(stat1.tx_dropped);
+
+                let total_packets = rx_packets_diff + tx_packets_diff;
+                let total_dropped = rx_dropped_diff + tx_dropped_diff;
+
+                if total_packets > 0 {
+                    let dropped_ratio =
+                        (total_dropped as f64 / total_packets as f64).min(1.0) as f32;
+                    max_dropped_ratio = max_dropped_ratio.max(dropped_ratio);
+                }
+            }
+        }
+
+        Ok(max_dropped_ratio)
+    }
+
+    /// Get actual interface speed from system (in bytes per second)
+    fn get_interface_speed(interface: &str) -> u64 {
+        // Try to read actual link speed from sysfs
+        let speed_path = format!("/sys/class/net/{interface}/speed");
+        #[allow(clippy::collapsible_if)]
+        if let Ok(speed_str) = fs::read_to_string(&speed_path) {
+            if let Ok(speed_mbps) = speed_str.trim().parse::<u64>() {
+                // Convert Mbps to bytes per second
+                // speed_mbps is in megabits per second, convert to bytes per second
+                return speed_mbps * 1_000_000 / 8;
+            }
+        }
+
+        // Try to get interface info from ethtool (if available)
+        if let Ok(output) = Command::new("ethtool").arg(interface).output() {
+            let output_str = String::from_utf8_lossy(&output.stdout);
+
+            for line in output_str.lines() {
+                if line.contains("Speed:") {
+                    // Parse "Speed: 1000Mb/s" or similar
+                    if let Some(speed_part) = line.split("Speed:").nth(1) {
+                        let speed_str = speed_part.trim();
+                        if speed_str.contains("1000Mb/s") || speed_str.contains("1000Mbps") {
+                            return 125_000_000; // 1 Gbps = 125 MB/s
+                        } else if speed_str.contains("100Mb/s") || speed_str.contains("100Mbps") {
+                            return 12_500_000; // 100 Mbps = 12.5 MB/s
+                        } else if speed_str.contains("10Mb/s") || speed_str.contains("10Mbps") {
+                            return 1_250_000; // 10 Mbps = 1.25 MB/s
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check if interface is up and has a carrier
+        let carrier_path = format!("/sys/class/net/{interface}/carrier");
+        let operstate_path = format!("/sys/class/net/{interface}/operstate");
+
+        let is_up = fs::read_to_string(&operstate_path)
+            .map(|s| s.trim() == "up")
+            .unwrap_or(false);
+
+        let has_carrier = fs::read_to_string(&carrier_path)
+            .map(|s| s.trim() == "1")
+            .unwrap_or(false);
+
+        // If interface is up and active, use conservative estimates
+        if is_up && has_carrier {
+            match interface {
+                // Ethernet interfaces - assume gigabit if active
+                name if name.starts_with("eth")
+                    || name.starts_with("enp")
+                    || name.starts_with("eno") =>
+                {
+                    125_000_000 // 1 Gbps = 125 MB/s
+                }
+                // WiFi interfaces - conservative estimate
+                name if name.starts_with("wlan")
+                    || name.starts_with("wlp")
+                    || name.starts_with("wlo") =>
+                {
+                    50_000_000 // ~400 Mbps = 50 MB/s (conservative WiFi)
+                }
+                // Virtual interfaces - high capacity
+                name if name.starts_with("br")
+                    || name.starts_with("bridge")
+                    || name.starts_with("docker")
+                    || name.starts_with("veth") =>
+                {
+                    1_000_000_000 // Virtual interfaces can be very fast
+                }
+                // USB and PPP interfaces
+                name if name.starts_with("usb") => 12_500_000, // 100 Mbps
+                name if name.starts_with("ppp") => 5_000_000,  // 40 Mbps
+                // Default conservative estimate
+                _ => 12_500_000, // 100 Mbps
+            }
+        } else {
+            // Interface is down or no carrier, return minimal capacity
+            1_000_000 // 8 Mbps minimum
+        }
     }
 
     /// Read file descriptor usage ratio
@@ -549,6 +697,8 @@ impl LinuxSystemMetrics {
             && self.disk_io_ratio <= 1.0
             && self.network_bandwidth_ratio >= 0.0
             && self.network_bandwidth_ratio <= 1.0
+            && self.network_dropped_packets_ratio >= 0.0
+            && self.network_dropped_packets_ratio <= 1.0
             && self.fd_usage_ratio >= 0.0
             && self.fd_usage_ratio <= 1.0
             && self.process_count_ratio >= 0.0

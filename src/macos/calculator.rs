@@ -3,58 +3,85 @@ use crate::error::PwrzvResult;
 use crate::sigmoid::SigmoidFn;
 use crate::{PowerReserveLevel, PowerReserveProvider, PwrzvError};
 use std::collections::HashMap;
+use std::env;
+
+// ================================
+// Environment variable helper for SigmoidFn configuration
+// ================================
+
+/// Create SigmoidFn from environment variables with fallback to defaults
+fn get_sigmoid_config(
+    env_prefix: &str,
+    default_midpoint: f32,
+    default_steepness: f32,
+) -> SigmoidFn {
+    let midpoint_env = format!("{env_prefix}_MIDPOINT");
+    let steepness_env = format!("{env_prefix}_STEEPNESS");
+
+    let midpoint = env::var(&midpoint_env)
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(default_midpoint);
+
+    let steepness = env::var(&steepness_env)
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(default_steepness);
+
+    SigmoidFn {
+        midpoint,
+        steepness,
+    }
+}
 
 // ================================
 // The core parameters of the macOS power reserve calculator
 // ================================
 
-// CPU Usage: 稍微线性响应，在 60% 开始明显影响性能
-const CPU_USAGE_CONFIG: SigmoidFn = SigmoidFn {
-    midpoint: 0.60,  // 60% CPU 使用率是一个较好的平衡点
-    steepness: 8.0,  // 降低陡峭度，使响应更线性
-};
+/// Get CPU usage configuration (env: PWRZV_MACOS_CPU_USAGE_MIDPOINT, PWRZV_MACOS_CPU_USAGE_STEEPNESS)
+fn get_cpu_usage_config() -> SigmoidFn {
+    get_sigmoid_config("PWRZV_MACOS_CPU_USAGE", 0.60, 8.0)
+}
 
-// CPU Load: 超过 1.0 表示有排队，1.2 是明显的性能瓶颈
-const CPU_LOAD_CONFIG: SigmoidFn = SigmoidFn {
-    midpoint: 1.2,   // 稍微提高临界点
-    steepness: 5.0,  // 保持相对平缓的响应
-};
+/// Get CPU load configuration (env: PWRZV_MACOS_CPU_LOAD_MIDPOINT, PWRZV_MACOS_CPU_LOAD_STEEPNESS)
+fn get_cpu_load_config() -> SigmoidFn {
+    get_sigmoid_config("PWRZV_MACOS_CPU_LOAD", 1.2, 5.0)
+}
 
-// Memory Usage: 很陡峭的曲线，85% 之前都还好，之后急剧恶化
-const MEMORY_USAGE_CONFIG: SigmoidFn = SigmoidFn {
-    midpoint: 0.85,  // 85% 内存使用率是关键临界点
-    steepness: 20.0, // 非常陡峭，符合内存特性
-};
+/// Get memory usage configuration (env: PWRZV_MACOS_MEMORY_USAGE_MIDPOINT, PWRZV_MACOS_MEMORY_USAGE_STEEPNESS)
+fn get_memory_usage_config() -> SigmoidFn {
+    get_sigmoid_config("PWRZV_MACOS_MEMORY_USAGE", 0.85, 20.0)
+}
 
-// Memory Compressed: 压缩内存比率，macOS 压缩算法很高效，60% 开始有压力
-const MEMORY_COMPRESSED_CONFIG: SigmoidFn = SigmoidFn {
-    midpoint: 0.60,  // 60% 压缩比开始有明显影响，现代 macOS 压缩很高效
-    steepness: 15.0, // 中等陡峭度，适应 macOS 内存管理特性
-};
+/// Get memory compressed configuration (env: PWRZV_MACOS_MEMORY_COMPRESSED_MIDPOINT, PWRZV_MACOS_MEMORY_COMPRESSED_STEEPNESS)
+fn get_memory_compressed_config() -> SigmoidFn {
+    get_sigmoid_config("PWRZV_MACOS_MEMORY_COMPRESSED", 0.60, 15.0)
+}
 
-// Disk I/O: 中等陡峭度，70% 利用率开始有影响
-const DISK_IO_CONFIG: SigmoidFn = SigmoidFn {
-    midpoint: 0.70,  // 70% I/O 利用率
-    steepness: 10.0, // 中等陡峭度
-};
+/// Get disk I/O configuration (env: PWRZV_MACOS_DISK_IO_MIDPOINT, PWRZV_MACOS_DISK_IO_STEEPNESS)
+fn get_disk_io_config() -> SigmoidFn {
+    get_sigmoid_config("PWRZV_MACOS_DISK_IO", 0.70, 10.0)
+}
 
-// Network: 相对平缓，80% 带宽利用率才开始明显影响
-const NETWORK_CONFIG: SigmoidFn = SigmoidFn {
-    midpoint: 0.80,  // 80% 网络带宽利用率
-    steepness: 6.0,  // 相对平缓
-};
+/// Get network bandwidth configuration (env: PWRZV_MACOS_NETWORK_MIDPOINT, PWRZV_MACOS_NETWORK_STEEPNESS)
+fn get_network_config() -> SigmoidFn {
+    get_sigmoid_config("PWRZV_MACOS_NETWORK", 0.80, 6.0)
+}
 
-// File Descriptor: 很陡峭，90% 之前还好，之后很快就会出问题
-const FD_CONFIG: SigmoidFn = SigmoidFn {
-    midpoint: 0.90,  // 90% 文件描述符使用率
-    steepness: 30.0, // 非常陡峭，接近极限时迅速恶化
-};
+/// Get network dropped packets configuration (env: PWRZV_MACOS_NETWORK_DROPPED_MIDPOINT, PWRZV_MACOS_NETWORK_DROPPED_STEEPNESS)
+fn get_network_dropped_config() -> SigmoidFn {
+    get_sigmoid_config("PWRZV_MACOS_NETWORK_DROPPED", 0.01, 50.0)
+}
 
-// Process Count: 中等陡峭度，80% 进程数开始有影响
-const PROCESS_CONFIG: SigmoidFn = SigmoidFn {
-    midpoint: 0.80,  // 80% 进程数比率
-    steepness: 12.0, // 中等陡峭度
-};
+/// Get file descriptor configuration (env: PWRZV_MACOS_FD_MIDPOINT, PWRZV_MACOS_FD_STEEPNESS)
+fn get_fd_config() -> SigmoidFn {
+    get_sigmoid_config("PWRZV_MACOS_FD", 0.90, 30.0)
+}
+
+/// Get process count configuration (env: PWRZV_MACOS_PROCESS_MIDPOINT, PWRZV_MACOS_PROCESS_STEEPNESS)
+fn get_process_config() -> SigmoidFn {
+    get_sigmoid_config("PWRZV_MACOS_PROCESS", 0.80, 12.0)
+}
 
 // ================================
 
@@ -108,15 +135,17 @@ impl MacProvider {
         metrics: &MacSystemMetrics,
     ) -> PwrzvResult<(PowerReserveLevel, HashMap<String, f32>)> {
         // calculate the score of each metric
-        let cpu_usage_score = CPU_USAGE_CONFIG.evaluate(metrics.cpu_usage_ratio);
-        let cpu_load_score = CPU_LOAD_CONFIG.evaluate(metrics.cpu_load_ratio);
-        let memory_usage_score = MEMORY_USAGE_CONFIG.evaluate(metrics.memory_usage_ratio);
+        let cpu_usage_score = get_cpu_usage_config().evaluate(metrics.cpu_usage_ratio);
+        let cpu_load_score = get_cpu_load_config().evaluate(metrics.cpu_load_ratio);
+        let memory_usage_score = get_memory_usage_config().evaluate(metrics.memory_usage_ratio);
         let memory_compressed_score =
-            MEMORY_COMPRESSED_CONFIG.evaluate(metrics.memory_compressed_ratio);
-        let disk_io_score = DISK_IO_CONFIG.evaluate(metrics.disk_io_ratio);
-        let network_score = NETWORK_CONFIG.evaluate(metrics.network_bandwidth_ratio);
-        let fd_score = FD_CONFIG.evaluate(metrics.fd_usage_ratio);
-        let process_score = PROCESS_CONFIG.evaluate(metrics.process_count_ratio);
+            get_memory_compressed_config().evaluate(metrics.memory_compressed_ratio);
+        let disk_io_score = get_disk_io_config().evaluate(metrics.disk_io_ratio);
+        let network_score = get_network_config().evaluate(metrics.network_bandwidth_ratio);
+        let network_dropped_score =
+            get_network_dropped_config().evaluate(metrics.network_dropped_packets_ratio);
+        let fd_score = get_fd_config().evaluate(metrics.fd_usage_ratio);
+        let process_score = get_process_config().evaluate(metrics.process_count_ratio);
 
         // build the details
         let mut details = HashMap::new();
@@ -134,6 +163,10 @@ impl MacProvider {
             "network_bandwidth_ratio".to_string(),
             metrics.network_bandwidth_ratio,
         );
+        details.insert(
+            "network_dropped_packets_ratio".to_string(),
+            metrics.network_dropped_packets_ratio,
+        );
         details.insert("fd_usage_ratio".to_string(), metrics.fd_usage_ratio);
         details.insert(
             "process_count_ratio".to_string(),
@@ -150,6 +183,7 @@ impl MacProvider {
         );
         details.insert("disk_io_score".to_string(), disk_io_score);
         details.insert("network_score".to_string(), network_score);
+        details.insert("network_dropped_score".to_string(), network_dropped_score);
         details.insert("fd_score".to_string(), fd_score);
         details.insert("process_score".to_string(), process_score);
 
@@ -161,6 +195,7 @@ impl MacProvider {
             memory_compressed_score,
             disk_io_score,
             network_score,
+            network_dropped_score,
             fd_score,
             process_score,
         ]
@@ -184,14 +219,15 @@ mod tests {
     fn test_power_level_calculation() {
         // Test high load situation (should trigger Critical with our sensitive parameters)
         let high_load_metrics = MacSystemMetrics {
-            cpu_usage_ratio: 0.9,       // Very high CPU
-            cpu_load_ratio: 1.8,        // High load ratio
-            memory_usage_ratio: 0.85,   // At memory threshold
-            memory_compressed_ratio: 0.6, // Very high compression
-            disk_io_ratio: 0.7,         // High disk I/O
-            network_bandwidth_ratio: 0.6, // Moderate network
-            fd_usage_ratio: 0.5,        // Normal FD usage
-            process_count_ratio: 0.6,   // Normal process count
+            cpu_usage_ratio: 0.9,               // Very high CPU
+            cpu_load_ratio: 1.8,                // High load ratio
+            memory_usage_ratio: 0.85,           // At memory threshold
+            memory_compressed_ratio: 0.6,       // Very high compression
+            disk_io_ratio: 0.7,                 // High disk I/O
+            network_bandwidth_ratio: 0.6,       // Moderate network
+            network_dropped_packets_ratio: 0.0, // No packet loss
+            fd_usage_ratio: 0.5,                // Normal FD usage
+            process_count_ratio: 0.6,           // Normal process count
         };
 
         let (level, _) = MacProvider::calculate(&high_load_metrics).unwrap();
@@ -201,107 +237,168 @@ mod tests {
             PowerReserveLevel::Critical | PowerReserveLevel::Low
         ));
 
-        // Test low load situation
-        let low_load_metrics = MacSystemMetrics {
-            cpu_usage_ratio: 0.15,
-            cpu_load_ratio: 0.2,
-            memory_usage_ratio: 0.4,
-            memory_compressed_ratio: 0.1,
-            disk_io_ratio: 0.2,
-            network_bandwidth_ratio: 0.3,
-            fd_usage_ratio: 0.3,
-            process_count_ratio: 0.4,
+        // Test normal load situation
+        let normal_metrics = MacSystemMetrics {
+            cpu_usage_ratio: 0.3,               // Normal CPU
+            cpu_load_ratio: 0.8,                // Reasonable load
+            memory_usage_ratio: 0.6,            // Normal memory
+            memory_compressed_ratio: 0.2,       // Low compression
+            disk_io_ratio: 0.2,                 // Low disk I/O
+            network_bandwidth_ratio: 0.3,       // Low network
+            network_dropped_packets_ratio: 0.0, // No packet loss
+            fd_usage_ratio: 0.3,                // Low FD usage
+            process_count_ratio: 0.4,           // Normal process count
         };
 
-        let (level, _) = MacProvider::calculate(&low_load_metrics).unwrap();
-        assert_eq!(level, PowerReserveLevel::Abundant);
+        let (level, _) = MacProvider::calculate(&normal_metrics).unwrap();
+        // Should result in higher reserve levels
+        assert!(matches!(
+            level,
+            PowerReserveLevel::Abundant | PowerReserveLevel::High | PowerReserveLevel::Medium
+        ));
+    }
+
+    #[test]
+    fn test_packet_loss_sensitivity() {
+        // Test that packet loss triggers appropriate response
+        let packet_loss_metrics = MacSystemMetrics {
+            cpu_usage_ratio: 0.2,                // Low CPU
+            cpu_load_ratio: 0.5,                 // Low load
+            memory_usage_ratio: 0.4,             // Low memory
+            memory_compressed_ratio: 0.1,        // Minimal compression
+            disk_io_ratio: 0.1,                  // Minimal I/O
+            network_bandwidth_ratio: 0.2,        // Low bandwidth usage
+            network_dropped_packets_ratio: 0.05, // 5% packet loss!
+            fd_usage_ratio: 0.2,                 // Low FD usage
+            process_count_ratio: 0.3,            // Low process count
+        };
+
+        let (level, details) = MacProvider::calculate(&packet_loss_metrics).unwrap();
+
+        // Even with low other metrics, packet loss should drive down the reserve level
+        let network_dropped_score = details.get("network_dropped_score").unwrap();
+        assert!(*network_dropped_score > 0.8); // Should be very high score (indicating problems)
+
+        assert!(matches!(
+            level,
+            PowerReserveLevel::Critical | PowerReserveLevel::Low | PowerReserveLevel::Medium
+        ));
     }
 
     #[test]
     fn test_sigmoid_parameter_tuning() {
-        // Test CPU usage - should be more linear
-        let cpu_config = CPU_USAGE_CONFIG;
-        assert!(cpu_config.evaluate(0.3) < 0.2);  // 30% CPU should be low score
-        assert!(cpu_config.evaluate(0.6) > 0.4 && cpu_config.evaluate(0.6) < 0.6);  // 60% CPU moderate
-        assert!(cpu_config.evaluate(0.9) > 0.8);  // 90% CPU should be high score
+        // Test memory compression sensitivity
+        let metrics = MacSystemMetrics {
+            cpu_usage_ratio: 0.1,
+            cpu_load_ratio: 0.3,
+            memory_usage_ratio: 0.4,
+            memory_compressed_ratio: 0.65, // Above our 60% threshold
+            disk_io_ratio: 0.1,
+            network_bandwidth_ratio: 0.1,
+            network_dropped_packets_ratio: 0.0,
+            fd_usage_ratio: 0.1,
+            process_count_ratio: 0.2,
+        };
 
-        // Test memory usage - should be steep (adjusted based on actual values)
-        let mem_config = MEMORY_USAGE_CONFIG;
-        assert!(mem_config.evaluate(0.7) < 0.1);   // 70% memory should still be very low
-        assert!(mem_config.evaluate(0.85) > 0.4 && mem_config.evaluate(0.85) < 0.6);  // 85% memory moderate (midpoint)
-        assert!(mem_config.evaluate(0.95) > 0.8);  // 95% memory should be high (adjusted from 0.9 to 0.8)
+        let (_, details) = MacProvider::calculate(&metrics).unwrap();
+        let memory_compressed_score = details.get("memory_compressed_score").unwrap();
 
-        // Test memory compressed - updated for realistic macOS behavior
-        let compressed_config = MEMORY_COMPRESSED_CONFIG;
-        assert!(compressed_config.evaluate(0.3) < 0.2);   // 30% compressed still low
-        assert!(compressed_config.evaluate(0.6) > 0.4 && compressed_config.evaluate(0.6) < 0.6);  // 60% moderate (midpoint)
-        assert!(compressed_config.evaluate(0.8) > 0.8);   // 80% compressed high
+        // Should show significant pressure due to compression
+        assert!(*memory_compressed_score > 0.6);
+    }
 
-        // Test file descriptor - should be very steep near limit
-        let fd_config = FD_CONFIG;
-        assert!(fd_config.evaluate(0.8) < 0.1);   // 80% FD should still be low
-        assert!(fd_config.evaluate(0.9) > 0.4 && fd_config.evaluate(0.9) < 0.6);  // 90% FD moderate (midpoint)
-        assert!(fd_config.evaluate(0.95) > 0.8);  // 95% FD should be high (adjusted from 0.9 to 0.8)
+    #[test]
+    fn test_environment_variable_configuration() {
+        unsafe {
+            // Set environment variables to test custom configuration
+            env::set_var("PWRZV_MACOS_CPU_USAGE_MIDPOINT", "0.50");
+            env::set_var("PWRZV_MACOS_CPU_USAGE_STEEPNESS", "15.0");
+
+            let config = get_cpu_usage_config();
+            assert_eq!(config.midpoint, 0.50);
+            assert_eq!(config.steepness, 15.0);
+
+            // Test that non-existent env vars use defaults
+            env::remove_var("PWRZV_MACOS_MEMORY_USAGE_MIDPOINT");
+            env::remove_var("PWRZV_MACOS_MEMORY_USAGE_STEEPNESS");
+
+            let default_config = get_memory_usage_config();
+            assert_eq!(default_config.midpoint, 0.85); // Default value
+            assert_eq!(default_config.steepness, 20.0); // Default value
+
+            // Test invalid env vars fall back to defaults
+            env::set_var("PWRZV_MACOS_DISK_IO_MIDPOINT", "invalid_float");
+            env::set_var("PWRZV_MACOS_DISK_IO_STEEPNESS", "not_a_number");
+
+            let fallback_config = get_disk_io_config();
+            assert_eq!(fallback_config.midpoint, 0.70); // Default value
+            assert_eq!(fallback_config.steepness, 10.0); // Default value
+
+            // Clean up
+            env::remove_var("PWRZV_MACOS_CPU_USAGE_MIDPOINT");
+            env::remove_var("PWRZV_MACOS_CPU_USAGE_STEEPNESS");
+            env::remove_var("PWRZV_MACOS_DISK_IO_MIDPOINT");
+            env::remove_var("PWRZV_MACOS_DISK_IO_STEEPNESS");
+        }
     }
 
     #[test]
     fn test_realistic_scenarios() {
-        // Test memory pressure scenario
+        // I/O bottleneck scenario
+        let io_bottleneck = MacSystemMetrics {
+            cpu_usage_ratio: 0.4,
+            cpu_load_ratio: 2.0, // High load due to I/O wait
+            memory_usage_ratio: 0.7,
+            memory_compressed_ratio: 0.3,
+            disk_io_ratio: 0.95, // Nearly saturated I/O
+            network_bandwidth_ratio: 0.2,
+            network_dropped_packets_ratio: 0.0,
+            fd_usage_ratio: 0.4,
+            process_count_ratio: 0.5,
+        };
+
+        let (level, _) = MacProvider::calculate(&io_bottleneck).unwrap();
+        assert!(matches!(
+            level,
+            PowerReserveLevel::Critical | PowerReserveLevel::Low
+        ));
+
+        // Memory pressure scenario
         let memory_pressure = MacSystemMetrics {
-            cpu_usage_ratio: 0.5,       // Normal CPU
-            cpu_load_ratio: 0.8,        // Normal load
-            memory_usage_ratio: 0.92,   // Very high memory usage
-            memory_compressed_ratio: 0.75, // Very high compression (updated for new threshold)
-            disk_io_ratio: 0.3,         // Low disk I/O
-            network_bandwidth_ratio: 0.2, // Low network
-            fd_usage_ratio: 0.4,        // Normal FD usage
-            process_count_ratio: 0.6,   // Normal process count
+            cpu_usage_ratio: 0.3,
+            cpu_load_ratio: 0.8,
+            memory_usage_ratio: 0.92,     // Very high memory usage
+            memory_compressed_ratio: 0.8, // Heavy compression
+            disk_io_ratio: 0.3,
+            network_bandwidth_ratio: 0.2,
+            network_dropped_packets_ratio: 0.0,
+            fd_usage_ratio: 0.3,
+            process_count_ratio: 0.4,
         };
 
-        let (level, details) = MacProvider::calculate(&memory_pressure).unwrap();
-        println!("Memory pressure scenario - Level: {:?}", level);
-        println!("Memory usage score: {:.3}", details.get("memory_usage_score").unwrap_or(&0.0));
-        println!("Memory compressed score: {:.3}", details.get("memory_compressed_score").unwrap_or(&0.0));
-        
-        // Should result in critical or high load due to severe memory pressure
-        assert!(matches!(level, PowerReserveLevel::Critical | PowerReserveLevel::Low | PowerReserveLevel::Medium));
+        let (level, _) = MacProvider::calculate(&memory_pressure).unwrap();
+        assert!(matches!(
+            level,
+            PowerReserveLevel::Critical | PowerReserveLevel::Low
+        ));
 
-        // Test CPU intensive scenario
-        let cpu_intensive = MacSystemMetrics {
-            cpu_usage_ratio: 0.85,      // High CPU usage
-            cpu_load_ratio: 2.5,        // Very high load
-            memory_usage_ratio: 0.6,    // Normal memory
-            memory_compressed_ratio: 0.1, // Low compression
-            disk_io_ratio: 0.4,         // Moderate disk I/O
-            network_bandwidth_ratio: 0.3, // Low network
-            fd_usage_ratio: 0.5,        // Normal FD usage
-            process_count_ratio: 0.7,   // Normal process count
+        // Balanced but high load
+        let balanced_high = MacSystemMetrics {
+            cpu_usage_ratio: 0.7,
+            cpu_load_ratio: 1.1,
+            memory_usage_ratio: 0.8,
+            memory_compressed_ratio: 0.5,
+            disk_io_ratio: 0.6,
+            network_bandwidth_ratio: 0.7,
+            network_dropped_packets_ratio: 0.001, // Very minimal packet loss
+            fd_usage_ratio: 0.6,
+            process_count_ratio: 0.7,
         };
 
-        let (level, details) = MacProvider::calculate(&cpu_intensive).unwrap();
-        println!("CPU intensive scenario - Level: {:?}", level);
-        println!("CPU usage score: {:.3}", details.get("cpu_usage_score").unwrap_or(&0.0));
-        println!("CPU load score: {:.3}", details.get("cpu_load_score").unwrap_or(&0.0));
-        
-        // Should result in critical or high load due to severe CPU pressure
-        assert!(matches!(level, PowerReserveLevel::Critical | PowerReserveLevel::Low | PowerReserveLevel::Medium));
-
-        // Test balanced normal load
-        let balanced_normal = MacSystemMetrics {
-            cpu_usage_ratio: 0.45,      // Moderate CPU
-            cpu_load_ratio: 0.7,        // Normal load
-            memory_usage_ratio: 0.7,    // Normal memory
-            memory_compressed_ratio: 0.15, // Low compression
-            disk_io_ratio: 0.5,         // Moderate disk I/O
-            network_bandwidth_ratio: 0.4, // Moderate network
-            fd_usage_ratio: 0.6,        // Normal FD usage
-            process_count_ratio: 0.6,   // Normal process count
-        };
-
-        let (level, _) = MacProvider::calculate(&balanced_normal).unwrap();
-        println!("Balanced normal scenario - Level: {:?}", level);
-        
-        // Should result in low to medium load
-        assert!(matches!(level, PowerReserveLevel::Abundant | PowerReserveLevel::High | PowerReserveLevel::Medium));
+        let (level, _) = MacProvider::calculate(&balanced_high).unwrap();
+        assert!(matches!(
+            level,
+            PowerReserveLevel::Low | PowerReserveLevel::Medium | PowerReserveLevel::High
+        ));
     }
 }

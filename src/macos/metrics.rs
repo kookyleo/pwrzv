@@ -5,6 +5,8 @@ use std::process::Command;
 use std::time::Duration;
 use tokio::time;
 
+const SAMPLE_INTERVAL: u64 = 500; // 500ms
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MacSystemMetrics {
     /// CPU total usage ratio: non-idle time percentage
@@ -31,6 +33,10 @@ pub struct MacSystemMetrics {
     /// Can use `netstat` or `ifstat` sampling estimation
     pub network_bandwidth_ratio: f32,
 
+    /// Network dropped packets ratio: `dropped_packets / total_packets`
+    /// Range [0.0, 1.0], approaching 1.0 means network is saturated
+    pub network_dropped_packets_ratio: f32,
+
     /// File descriptor usage ratio: open files / maxfiles
     /// `sysctl kern.num_files` / `kern.maxfiles`
     pub fd_usage_ratio: f32,
@@ -44,6 +50,10 @@ pub struct MacSystemMetrics {
 struct NetworkInterfaceStats {
     bytes_in: u64,
     bytes_out: u64,
+    packets_in: u64,
+    packets_out: u64,
+    dropped_in: u64,
+    dropped_out: u64,
 }
 
 impl MacSystemMetrics {
@@ -72,7 +82,7 @@ impl MacSystemMetrics {
         let (cpu_usage_ratio, cpu_load_ratio) = cpu_result?;
         let (memory_usage_ratio, memory_compressed_ratio) = memory_result?;
         let disk_io_ratio = disk_result?;
-        let network_bandwidth_ratio = network_result?;
+        let (network_bandwidth_ratio, network_dropped_packets_ratio) = network_result?;
         let fd_usage_ratio = fd_result?;
         let process_count_ratio = process_result?;
 
@@ -83,6 +93,7 @@ impl MacSystemMetrics {
             memory_compressed_ratio,
             disk_io_ratio,
             network_bandwidth_ratio,
+            network_dropped_packets_ratio,
             fd_usage_ratio,
             process_count_ratio,
         })
@@ -107,9 +118,11 @@ impl MacSystemMetrics {
         Self::get_disk_io_utilization().await
     }
 
-    /// Collect network bandwidth metrics
-    async fn collect_network_metrics() -> PwrzvResult<f32> {
-        Self::get_network_utilization().await
+    /// Collect network bandwidth and dropped packets metrics
+    async fn collect_network_metrics() -> PwrzvResult<(f32, f32)> {
+        let bandwidth_ratio = Self::get_network_utilization().await?;
+        let dropped_packets_ratio = Self::get_network_dropped_packets().await?;
+        Ok((bandwidth_ratio, dropped_packets_ratio))
     }
 
     /// Collect file descriptor metrics
@@ -307,41 +320,43 @@ impl MacSystemMetrics {
 
     /// Get disk I/O utilization
     async fn get_disk_io_utilization() -> PwrzvResult<f32> {
-        // Use iostat to get disk throughput
+        // Use iostat -o to get disk utilization percentage
+        // Calculate %util = (tps × msps) / 1000
+        // This gives us the percentage of time the device is busy
         let output = Command::new("iostat")
-            .args(["-d", "-c", "2", "-w", "1"])
+            .args(["-o", "-d", "-c", "2", "-w", "1"])
             .output()
             .map_err(|e| PwrzvError::collection_error(&format!("Failed to run iostat: {e}")))?;
 
         let output_str = String::from_utf8_lossy(&output.stdout);
 
-        // Parse the last measurement (second line of data)
+        // Parse the last measurement (second line of data) for tps and msps values
         let lines: Vec<&str> = output_str.lines().collect();
-        let mut max_throughput = 0.0f32;
+        let mut max_utilization = 0.0f32;
         let mut found_data = false;
 
         // Find disk data lines (skip header and first measurement)
         for line in lines.iter().skip(2) {
             let parts: Vec<&str> = line.split_whitespace().collect();
 
-            // Expected format: KB/t  tps  MB/s  KB/t  tps  MB/s (for multiple disks)
-            // We want the MB/s values (every 3rd column starting from index 2)
-            let mut i = 2;
-            while i < parts.len() {
-                if let Ok(mb_per_sec) = parts[i].parse::<f32>() {
-                    max_throughput = max_throughput.max(mb_per_sec);
+            // Expected format: sps tps msps  sps tps msps (for multiple disks)
+            // We need tps (index 1, 4, 7...) and msps (index 2, 5, 8...)
+            let mut i = 1;
+            while i + 1 < parts.len() {
+                if let (Ok(tps), Ok(msps)) = (parts[i].parse::<f32>(), parts[i + 1].parse::<f32>())
+                {
+                    // Calculate device utilization: %util = (tps × msps) / 1000
+                    // This represents the percentage of time the device is busy
+                    let utilization = ((tps * msps) / 1000.0).min(1.0);
+                    max_utilization = max_utilization.max(utilization);
                     found_data = true;
                 }
-                i += 3; // Skip to next MB/s column
+                i += 3; // Skip to next device (sps, tps, msps)
             }
         }
 
         if found_data {
-            // Estimate utilization based on throughput
-            // Assume typical SSD can handle ~500 MB/s sustained
-            let estimated_max_throughput = 500.0; // MB/s
-            let utilization = (max_throughput / estimated_max_throughput).min(1.0);
-            Ok(utilization)
+            Ok(max_utilization)
         } else {
             // Fallback to a more conservative estimate
             Self::get_disk_io_fallback()
@@ -377,13 +392,28 @@ impl MacSystemMetrics {
         let stats1 = Self::get_network_stats()?;
 
         // Wait for sampling interval
-        time::sleep(Duration::from_millis(500)).await;
+        time::sleep(Duration::from_millis(SAMPLE_INTERVAL)).await;
 
         // Second sampling
         let stats2 = Self::get_network_stats()?;
 
         // Calculate bandwidth utilization
         Self::calculate_network_utilization(&stats1, &stats2)
+    }
+
+    /// Get network dropped packets ratio
+    async fn get_network_dropped_packets() -> PwrzvResult<f32> {
+        // First sampling
+        let stats1 = Self::get_network_stats()?;
+
+        // Wait for sampling interval
+        time::sleep(Duration::from_millis(SAMPLE_INTERVAL)).await;
+
+        // Second sampling
+        let stats2 = Self::get_network_stats()?;
+
+        // Calculate dropped packets ratio
+        Self::calculate_network_dropped_packets(&stats1, &stats2)
     }
 
     /// Get network interface statistics
@@ -407,17 +437,31 @@ impl MacSystemMetrics {
                     continue;
                 }
 
-                if let (Ok(bytes_in), Ok(bytes_out), Ok(_packets_in), Ok(_packets_out)) = (
-                    fields[6].parse::<u64>(),
-                    fields[9].parse::<u64>(),
-                    fields[4].parse::<u64>(),
-                    fields[7].parse::<u64>(),
+                // Parse fields: Name Mtu Network Address Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll
+                if let (
+                    Ok(packets_in),
+                    Ok(dropped_in),
+                    Ok(bytes_in),
+                    Ok(packets_out),
+                    Ok(dropped_out),
+                    Ok(bytes_out),
+                ) = (
+                    fields[4].parse::<u64>(), // Ipkts
+                    fields[5].parse::<u64>(), // Ierrs
+                    fields[6].parse::<u64>(), // Ibytes
+                    fields[7].parse::<u64>(), // Opkts
+                    fields[8].parse::<u64>(), // Oerrs
+                    fields[9].parse::<u64>(), // Obytes
                 ) {
                     stats.insert(
                         interface.to_string(),
                         NetworkInterfaceStats {
                             bytes_in,
                             bytes_out,
+                            packets_in,
+                            packets_out,
+                            dropped_in,
+                            dropped_out,
                         },
                     );
                 }
@@ -428,34 +472,115 @@ impl MacSystemMetrics {
     }
 
     /// Calculate network bandwidth utilization
+    /// Returns the maximum utilization across all active interfaces
     fn calculate_network_utilization(
         stats1: &HashMap<String, NetworkInterfaceStats>,
         stats2: &HashMap<String, NetworkInterfaceStats>,
     ) -> PwrzvResult<f32> {
-        let mut total_bytes_per_sec = 0u64;
-        let mut active_interfaces = 0;
+        let mut max_utilization = 0.0f32;
 
         for (interface, stats2) in stats2 {
             if let Some(stats1) = stats1.get(interface) {
                 let bytes_in_diff = stats2.bytes_in.saturating_sub(stats1.bytes_in);
                 let bytes_out_diff = stats2.bytes_out.saturating_sub(stats1.bytes_out);
 
-                // Calculate bytes per second (sampling interval 500ms)
-                let bytes_per_sec = (bytes_in_diff + bytes_out_diff) * 2;
-                total_bytes_per_sec += bytes_per_sec;
-                active_interfaces += 1;
+                // Calculate bytes per second
+                let bytes_per_sec = (bytes_in_diff + bytes_out_diff) * (1000 / SAMPLE_INTERVAL);
+
+                // Get actual interface speed from system
+                let interface_capacity = Self::get_interface_speed(interface);
+
+                if interface_capacity > 0 {
+                    let utilization =
+                        (bytes_per_sec as f64 / interface_capacity as f64).min(1.0) as f32;
+                    max_utilization = max_utilization.max(utilization);
+                }
             }
         }
 
-        if active_interfaces == 0 {
-            return Ok(0.0);
+        Ok(max_utilization)
+    }
+
+    /// Calculate network dropped packets ratio
+    /// Returns the maximum dropped packets ratio across all active interfaces
+    fn calculate_network_dropped_packets(
+        stats1: &HashMap<String, NetworkInterfaceStats>,
+        stats2: &HashMap<String, NetworkInterfaceStats>,
+    ) -> PwrzvResult<f32> {
+        let mut max_dropped_ratio = 0.0f32;
+
+        for (interface, stats2) in stats2 {
+            if let Some(stats1) = stats1.get(interface) {
+                // Calculate packet differences
+                let packets_in_diff = stats2.packets_in.saturating_sub(stats1.packets_in);
+                let packets_out_diff = stats2.packets_out.saturating_sub(stats1.packets_out);
+                let dropped_in_diff = stats2.dropped_in.saturating_sub(stats1.dropped_in);
+                let dropped_out_diff = stats2.dropped_out.saturating_sub(stats1.dropped_out);
+
+                let total_packets = packets_in_diff + packets_out_diff;
+                let total_dropped = dropped_in_diff + dropped_out_diff;
+
+                if total_packets > 0 {
+                    let dropped_ratio =
+                        (total_dropped as f64 / total_packets as f64).min(1.0) as f32;
+                    max_dropped_ratio = max_dropped_ratio.max(dropped_ratio);
+                }
+            }
         }
 
-        // Assume gigabit network (1 Gbps = 125 MB/s)
-        let gigabit_bytes_per_sec = 125_000_000u64;
-        let utilization = (total_bytes_per_sec as f64 / gigabit_bytes_per_sec as f64).min(1.0);
+        Ok(max_dropped_ratio)
+    }
 
-        Ok(utilization as f32)
+    /// Get actual interface speed from system (in bytes per second)
+    fn get_interface_speed(interface: &str) -> u64 {
+        // Try to get actual link speed using ifconfig
+        if let Ok(output) = Command::new("ifconfig").arg(interface).output() {
+            let output_str = String::from_utf8_lossy(&output.stdout);
+
+            // Look for speed information in ifconfig output
+            for line in output_str.lines() {
+                if line.contains("media:") {
+                    // Parse media line for speed info
+                    if line.contains("1000baseT") || line.contains("1000BaseTX") {
+                        return 125_000_000; // 1 Gbps = 125 MB/s
+                    } else if line.contains("100baseTX") || line.contains("100BaseT") {
+                        return 12_500_000; // 100 Mbps = 12.5 MB/s
+                    } else if line.contains("10baseT") {
+                        return 1_250_000; // 10 Mbps = 1.25 MB/s
+                    }
+                }
+
+                // Check for active status and estimate WiFi speed
+                if line.contains("status: active") && interface.starts_with("en") {
+                    // For active ethernet without explicit speed, assume gigabit
+                    return 125_000_000;
+                }
+            }
+        }
+
+        // Fallback: try system_profiler for more detailed network info
+        if let Ok(output) = Command::new("system_profiler")
+            .args(["-xml", "SPNetworkDataType"])
+            .output()
+        {
+            let output_str = String::from_utf8_lossy(&output.stdout);
+
+            // Look for this specific interface in system profiler output
+            if output_str.contains(interface) {
+                if output_str.contains("1000") {
+                    return 125_000_000; // 1 Gbps
+                } else if output_str.contains("100") {
+                    return 12_500_000; // 100 Mbps
+                }
+            }
+        }
+
+        // Final fallback: conservative estimate based on interface type
+        match interface {
+            name if name.starts_with("en") => 125_000_000, // Assume gigabit ethernet
+            name if name.starts_with("wl") || name == "awdl0" => 50_000_000, // Conservative WiFi
+            _ => 12_500_000,                               // Conservative default
+        }
     }
 
     /// Get file descriptor usage ratio
@@ -536,6 +661,8 @@ impl MacSystemMetrics {
             && self.disk_io_ratio <= 1.0
             && self.network_bandwidth_ratio >= 0.0
             && self.network_bandwidth_ratio <= 1.0
+            && self.network_dropped_packets_ratio >= 0.0
+            && self.network_dropped_packets_ratio <= 1.0
             && self.fd_usage_ratio >= 0.0
             && self.fd_usage_ratio <= 1.0
             && self.process_count_ratio >= 0.0
