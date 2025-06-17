@@ -29,6 +29,19 @@ async fn main() {
 }
 
 /// Build command line interface
+///
+/// Creates the CLI structure using clap with support for detailed output
+/// with optional format specification.
+///
+/// # Returns
+///
+/// A configured `Command` instance ready to parse command line arguments
+///
+/// # CLI Options
+///
+/// - `--detailed [FORMAT]`: Show detailed component scores
+///   - `FORMAT` can be: `text` (default), `json`, or `yaml`
+///   - If no format is specified, defaults to `text`
 fn build_cli() -> Command {
     Command::new("pwrzv")
         .version(VERSION)
@@ -51,6 +64,33 @@ fn build_cli() -> Command {
 }
 
 /// Run main logic
+///
+/// Handles the main application flow including platform detection,
+/// argument parsing, and output formatting.
+///
+/// # Arguments
+///
+/// * `matches` - Parsed command line arguments from clap
+///
+/// # Returns
+///
+/// * `Ok(())` - If execution completes successfully
+/// * `Err(PwrzvError)` - If any error occurs during execution
+///
+/// # Behavior
+///
+/// 1. Checks platform compatibility (Linux/macOS only)
+/// 2. If `--detailed` flag is provided:
+///    - Collects detailed system metrics
+///    - Outputs results in specified format (text/json/yaml)
+/// 3. If no flags provided:
+///    - Returns simple numeric power reserve level (1-5)
+///
+/// # Platform Support
+///
+/// - **Linux**: Full support via `/proc` filesystem
+/// - **macOS**: Full support via system commands
+/// - **Other platforms**: Returns error with helpful message
 async fn run(matches: ArgMatches) -> Result<(), PwrzvError> {
     // Check platform compatibility
     if let Err(e) = check_platform() {
@@ -72,6 +112,37 @@ async fn run(matches: ArgMatches) -> Result<(), PwrzvError> {
 }
 
 /// Output detailed result
+///
+/// Formats and outputs detailed system metrics in the specified format.
+///
+/// # Arguments
+///
+/// * `format` - Output format: "text", "json", or "yaml"
+/// * `level` - Power reserve level enum
+/// * `details` - HashMap containing detailed metric names and values
+///
+/// # Returns
+///
+/// * `Ok(())` - If output is successful
+/// * `Err(PwrzvError)` - If formatting or output fails
+///
+/// # Output Formats
+///
+/// ## Text Format
+/// Human-readable format with sections for metrics and scores,
+/// including interpretation and recommendations.
+///
+/// ## JSON Format
+/// Machine-readable JSON with platform info, level, and all metrics.
+///
+/// ## YAML Format
+/// YAML format suitable for configuration files and automation.
+///
+/// # Metric Categories
+///
+/// The output includes two categories of metrics:
+/// - **Ratios** (suffix `_ratio`): Raw utilization values (0.0-1.0)
+/// - **Scores** (suffix `_score`): Sigmoid-transformed pressure scores (0.0-1.0)
 fn output_detailed_result(
     format: &str,
     level: PowerReserveLevel,
@@ -122,6 +193,21 @@ fn output_detailed_result(
 }
 
 /// Print metrics section
+///
+/// Helper function to print a section of metrics with consistent formatting.
+///
+/// # Arguments
+///
+/// * `details` - HashMap containing all metrics
+/// * `suffix` - Filter suffix to select metrics (e.g., "_ratio", "_score")
+///
+/// # Behavior
+///
+/// - Filters metrics by suffix
+/// - Sorts metrics alphabetically by name
+/// - Formats ratio metrics as percentages
+/// - Formats score metrics as decimal values
+/// - Adds appropriate visual spacing
 fn print_metrics_section(details: &HashMap<String, f32>, suffix: &str) {
     let mut metrics: Vec<(String, f32)> = details
         .iter()

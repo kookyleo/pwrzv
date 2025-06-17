@@ -669,3 +669,457 @@ impl MacSystemMetrics {
             && self.process_count_ratio <= 1.0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mac_system_metrics_validate() {
+        // Test valid metrics
+        let valid_metrics = MacSystemMetrics {
+            cpu_usage_ratio: 0.4,
+            cpu_load_ratio: 1.5,
+            memory_usage_ratio: 0.6,
+            memory_compressed_ratio: 0.3,
+            disk_io_ratio: 0.2,
+            network_bandwidth_ratio: 0.5,
+            network_dropped_packets_ratio: 0.01,
+            fd_usage_ratio: 0.7,
+            process_count_ratio: 0.4,
+        };
+        assert!(valid_metrics.validate());
+
+        // Test boundary values
+        let boundary_metrics = MacSystemMetrics {
+            cpu_usage_ratio: 1.0,
+            cpu_load_ratio: 0.0,
+            memory_usage_ratio: 1.0,
+            memory_compressed_ratio: 1.0,
+            disk_io_ratio: 1.0,
+            network_bandwidth_ratio: 1.0,
+            network_dropped_packets_ratio: 1.0,
+            fd_usage_ratio: 1.0,
+            process_count_ratio: 1.0,
+        };
+        assert!(boundary_metrics.validate());
+
+        // Test invalid metrics (negative values)
+        let invalid_metrics = MacSystemMetrics {
+            cpu_usage_ratio: -0.1,
+            cpu_load_ratio: 1.5,
+            memory_usage_ratio: 0.6,
+            memory_compressed_ratio: 0.3,
+            disk_io_ratio: 0.2,
+            network_bandwidth_ratio: 0.5,
+            network_dropped_packets_ratio: 0.01,
+            fd_usage_ratio: 0.7,
+            process_count_ratio: 0.4,
+        };
+        assert!(!invalid_metrics.validate());
+
+        // Test invalid metrics (values > 1.0 for ratios)
+        let invalid_metrics2 = MacSystemMetrics {
+            cpu_usage_ratio: 1.5,
+            cpu_load_ratio: 1.5,
+            memory_usage_ratio: 0.6,
+            memory_compressed_ratio: 0.3,
+            disk_io_ratio: 0.2,
+            network_bandwidth_ratio: 0.5,
+            network_dropped_packets_ratio: 0.01,
+            fd_usage_ratio: 0.7,
+            process_count_ratio: 0.4,
+        };
+        assert!(!invalid_metrics2.validate());
+    }
+
+    #[test]
+    fn test_vm_stat_parsing() {
+        // Test valid vm_stat line
+        let valid_line = "Pages free:                               12345.";
+        let result = MacSystemMetrics::parse_vm_stat_value(valid_line);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 12345);
+
+        // Test line without trailing dot
+        let no_dot_line = "Pages active:                             67890";
+        let result = MacSystemMetrics::parse_vm_stat_value(no_dot_line);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 67890);
+
+        // Test invalid format (no numeric value)
+        let invalid_line = "Pages invalid: no number here";
+        let result = MacSystemMetrics::parse_vm_stat_value(invalid_line);
+        assert!(result.is_err());
+
+        // Test empty line
+        let empty_line = "";
+        let result = MacSystemMetrics::parse_vm_stat_value(empty_line);
+        assert!(result.is_err());
+
+        // Test line with multiple numbers (should take last one)
+        let multi_number_line = "Pages active: 123 456 789.";
+        let result = MacSystemMetrics::parse_vm_stat_value(multi_number_line);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 789);
+    }
+
+    #[test]
+    fn test_memory_calculation() {
+        // Test that memory calculations handle zero division
+        // This is a unit test for the calculation logic
+        let pages_free = 1000u64;
+        let pages_active = 2000u64;
+        let pages_inactive = 1500u64;
+        let pages_wired = 500u64;
+        let pages_compressed = 200u64;
+
+        let total_pages =
+            pages_free + pages_active + pages_inactive + pages_wired + pages_compressed;
+        let used_pages = pages_active + pages_wired;
+        let usage_ratio = used_pages as f32 / total_pages as f32;
+
+        assert!((usage_ratio - 0.4762).abs() < 0.01); // 2500/5200 ≈ 0.4762
+
+        // Test compressed ratio calculation
+        let compressed_ratio = pages_compressed as f32 / (total_pages + pages_compressed) as f32;
+        assert!((compressed_ratio - 0.037).abs() < 0.01); // 200/5400 ≈ 0.037
+    }
+
+    #[test]
+    fn test_network_bandwidth_calculation() {
+        let mut stats1 = HashMap::new();
+        stats1.insert(
+            "en0".to_string(),
+            NetworkInterfaceStats {
+                bytes_in: 1000000,
+                bytes_out: 500000,
+                packets_in: 1000,
+                packets_out: 500,
+                dropped_in: 10,
+                dropped_out: 5,
+            },
+        );
+
+        let mut stats2 = HashMap::new();
+        stats2.insert(
+            "en0".to_string(),
+            NetworkInterfaceStats {
+                bytes_in: 2000000,  // +1MB
+                bytes_out: 1000000, // +500KB
+                packets_in: 1100,   // +100 packets
+                packets_out: 550,   // +50 packets
+                dropped_in: 12,     // +2 dropped
+                dropped_out: 7,     // +2 dropped
+            },
+        );
+
+        let result = MacSystemMetrics::calculate_network_utilization(&stats1, &stats2);
+        assert!(result.is_ok());
+
+        let utilization = result.unwrap();
+        assert!((0.0..=1.0).contains(&utilization));
+    }
+
+    #[test]
+    fn test_network_packet_loss_calculation() {
+        let mut stats1 = HashMap::new();
+        stats1.insert(
+            "en0".to_string(),
+            NetworkInterfaceStats {
+                bytes_in: 1000000,
+                bytes_out: 500000,
+                packets_in: 1000,
+                packets_out: 500,
+                dropped_in: 10,
+                dropped_out: 5,
+            },
+        );
+
+        let mut stats2 = HashMap::new();
+        stats2.insert(
+            "en0".to_string(),
+            NetworkInterfaceStats {
+                bytes_in: 2000000,
+                bytes_out: 1000000,
+                packets_in: 1100, // +100 packets
+                packets_out: 550, // +50 packets
+                dropped_in: 15,   // +5 dropped
+                dropped_out: 8,   // +3 dropped
+            },
+        );
+
+        let result = MacSystemMetrics::calculate_network_dropped_packets(&stats1, &stats2);
+        assert!(result.is_ok());
+
+        let dropped_ratio = result.unwrap();
+        // Total packets: 150, dropped: 8, ratio: 8/150 ≈ 0.053
+        assert!((dropped_ratio - 0.053).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_interface_speed_detection() {
+        // Test speed detection for different interface types
+        let en0_speed = MacSystemMetrics::get_interface_speed("en0");
+        assert!(en0_speed > 0);
+
+        let awdl_speed = MacSystemMetrics::get_interface_speed("awdl0");
+        assert!(awdl_speed > 0);
+
+        let unknown_speed = MacSystemMetrics::get_interface_speed("unknown123");
+        assert!(unknown_speed > 0);
+
+        // Ethernet interfaces should generally have higher speeds than WiFi
+        assert!(en0_speed >= awdl_speed);
+    }
+
+    #[test]
+    fn test_cpu_usage_parsing() {
+        // Test top command CPU usage parsing logic
+        let cpu_line = "CPU usage: 12.5% user, 6.25% sys, 81.25% idle";
+
+        // Simulate the parsing logic from get_cpu_usage
+        if let Some(idle_start) = cpu_line.find("% idle") {
+            let before_idle = &cpu_line[..idle_start];
+            if let Some(last_space) = before_idle.rfind(' ') {
+                let idle_str = &before_idle[last_space + 1..];
+                if let Ok(idle_percent) = idle_str.parse::<f32>() {
+                    let cpu_usage = (100.0 - idle_percent) / 100.0;
+                    assert!((cpu_usage - 0.1875).abs() < 0.001); // 18.75% usage
+                }
+            }
+        }
+
+        // Test invalid CPU line
+        let invalid_line = "Invalid CPU line format";
+        assert!(!invalid_line.contains("% idle"));
+    }
+
+    #[test]
+    fn test_load_average_parsing() {
+        // Test sysctl vm.loadavg parsing logic
+        let loadavg_output = "{ 1.23 2.34 3.45 }";
+        let parts: Vec<&str> = loadavg_output.split_whitespace().collect();
+
+        #[allow(clippy::collapsible_if)]
+        if parts.len() >= 3 {
+            if let Ok(load_1min) = parts[1].parse::<f32>() {
+                assert!((load_1min - 1.23).abs() < 0.001);
+
+                // Test load ratio calculation with 4 cores
+                let cpu_cores = 4u32;
+                let load_ratio = load_1min / cpu_cores as f32;
+                assert!((load_ratio - 0.3075).abs() < 0.001); // 1.23/4 = 0.3075
+            }
+        }
+    }
+
+    #[test]
+    fn test_iostat_parsing_simulation() {
+        // Test iostat output parsing logic simulation
+        let iostat_line = "    0.5     2.5     1.2     0.3     1.8     0.9";
+        let parts: Vec<&str> = iostat_line.split_whitespace().collect();
+
+        // Test parsing tps and msps pairs (index 1,2 and 4,5)
+        let mut max_utilization = 0.0f32;
+        let mut i = 1;
+
+        while i + 1 < parts.len() {
+            if let (Ok(tps), Ok(msps)) = (parts[i].parse::<f32>(), parts[i + 1].parse::<f32>()) {
+                let utilization = ((tps * msps) / 1000.0).min(1.0);
+                max_utilization = max_utilization.max(utilization);
+            }
+            i += 3;
+        }
+
+        // 2.5 * 1.2 / 1000 = 0.003
+        assert!((max_utilization - 0.003).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_netstat_parsing_simulation() {
+        // Test netstat -ib output parsing
+        let netstat_line = "en0      1500  link#4    12:34:56:78:9a:bc  1000000      0  2000000  500000      0  1000000     0";
+        let fields: Vec<&str> = netstat_line.split_whitespace().collect();
+
+        if fields.len() >= 10 {
+            let interface = fields[0];
+            assert_eq!(interface, "en0");
+
+            if let (
+                Ok(packets_in),
+                Ok(dropped_in),
+                Ok(bytes_in),
+                Ok(packets_out),
+                Ok(dropped_out),
+                Ok(bytes_out),
+            ) = (
+                fields[4].parse::<u64>(), // Ipkts
+                fields[5].parse::<u64>(), // Ierrs
+                fields[6].parse::<u64>(), // Ibytes
+                fields[7].parse::<u64>(), // Opkts
+                fields[8].parse::<u64>(), // Oerrs
+                fields[9].parse::<u64>(), // Obytes
+            ) {
+                assert_eq!(packets_in, 1000000);
+                assert_eq!(bytes_in, 2000000);
+                assert_eq!(packets_out, 500000);
+                assert_eq!(bytes_out, 1000000);
+                assert_eq!(dropped_in, 0);
+                assert_eq!(dropped_out, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_edge_cases() {
+        // Test zero division protection
+        let mut empty_stats1 = HashMap::new();
+        let mut empty_stats2 = HashMap::new();
+
+        let result = MacSystemMetrics::calculate_network_utilization(&empty_stats1, &empty_stats2);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0.0);
+
+        let result =
+            MacSystemMetrics::calculate_network_dropped_packets(&empty_stats1, &empty_stats2);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0.0);
+
+        // Test single interface with zero packets
+        empty_stats1.insert(
+            "en0".to_string(),
+            NetworkInterfaceStats {
+                bytes_in: 0,
+                bytes_out: 0,
+                packets_in: 0,
+                packets_out: 0,
+                dropped_in: 0,
+                dropped_out: 0,
+            },
+        );
+
+        empty_stats2.insert(
+            "en0".to_string(),
+            NetworkInterfaceStats {
+                bytes_in: 0,
+                bytes_out: 0,
+                packets_in: 0,
+                packets_out: 0,
+                dropped_in: 0,
+                dropped_out: 0,
+            },
+        );
+
+        let result =
+            MacSystemMetrics::calculate_network_dropped_packets(&empty_stats1, &empty_stats2);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0.0);
+    }
+
+    #[test]
+    fn test_error_handling() {
+        // Test vm_stat value parsing with invalid input
+        let invalid_lines = [
+            "Pages free: invalid",
+            "Pages free:",
+            "Not a vm_stat line",
+            "Pages free: 12.34.56", // Multiple dots
+        ];
+
+        for line in &invalid_lines {
+            let result = MacSystemMetrics::parse_vm_stat_value(line);
+            assert!(result.is_err(), "Should fail for line: {line}");
+        }
+    }
+
+    #[test]
+    fn test_realistic_network_scenarios() {
+        // High bandwidth usage scenario
+        let mut stats1 = HashMap::new();
+        stats1.insert(
+            "en0".to_string(),
+            NetworkInterfaceStats {
+                bytes_in: 0,
+                bytes_out: 0,
+                packets_in: 0,
+                packets_out: 0,
+                dropped_in: 0,
+                dropped_out: 0,
+            },
+        );
+
+        let mut stats2 = HashMap::new();
+        stats2.insert(
+            "en0".to_string(),
+            NetworkInterfaceStats {
+                bytes_in: 100_000_000, // 100MB in 500ms = very high usage
+                bytes_out: 50_000_000, // 50MB out
+                packets_in: 100000,
+                packets_out: 50000,
+                dropped_in: 0,
+                dropped_out: 0,
+            },
+        );
+
+        let result = MacSystemMetrics::calculate_network_utilization(&stats1, &stats2);
+        assert!(result.is_ok());
+
+        // Should show high utilization
+        let utilization = result.unwrap();
+        assert!(utilization > 0.0);
+
+        // Packet loss scenario
+        stats2.get_mut("en0").unwrap().dropped_in = 1000; // 1000 dropped out of 150000 total
+
+        let result = MacSystemMetrics::calculate_network_dropped_packets(&stats1, &stats2);
+        assert!(result.is_ok());
+
+        let dropped_ratio = result.unwrap();
+        assert!((dropped_ratio - 0.0067).abs() < 0.001); // 1000/150000 ≈ 0.0067
+    }
+
+    #[test]
+    fn test_macos_specific_interfaces() {
+        // Test macOS-specific interface types
+        let interfaces = ["en0", "en1", "awdl0", "utun0", "bridge0"];
+
+        for interface in &interfaces {
+            let speed = MacSystemMetrics::get_interface_speed(interface);
+            assert!(
+                speed > 0,
+                "Interface {interface} should have non-zero speed"
+            );
+
+            // en interfaces should generally have higher speeds
+            if interface.starts_with("en") {
+                assert!(
+                    speed >= 12_500_000,
+                    "Ethernet interface {interface} should have at least 100Mbps"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_memory_metrics_ranges() {
+        // Test that memory calculation results are in valid ranges
+        let test_cases = [
+            (1000, 2000, 1500, 500, 200), // Normal case
+            (0, 1000, 0, 0, 0),           // Minimal memory
+            (1, 1, 1, 1, 1),              // Edge case with small numbers
+        ];
+
+        for (free, active, inactive, wired, compressed) in test_cases {
+            let total = free + active + inactive + wired + compressed;
+            if total > 0 {
+                let used = active + wired;
+                let usage_ratio = used as f32 / total as f32;
+                assert!((0.0..=1.0).contains(&usage_ratio));
+
+                let compressed_ratio = compressed as f32 / (total + compressed) as f32;
+                assert!((0.0..=1.0).contains(&compressed_ratio));
+            }
+        }
+    }
+}

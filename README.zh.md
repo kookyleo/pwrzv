@@ -42,14 +42,7 @@
 ### 基本使用
 ```bash
 $ pwrzv
-System Metrics:
-  CPU Usage: 12.34% (iowait: 0.00%)
-  Memory Available: 78.50%
-  Swap Usage: 0.00%
-  Disk I/O Usage: 5.10%
-  Network I/O Usage: 0.75%
-  File Descriptor Usage: 3.42%
-Power Reserve Score: 5 (Excellent - Abundant resources)
+2
 ```
 
 ### 详细分析
