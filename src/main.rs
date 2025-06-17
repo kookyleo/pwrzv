@@ -155,9 +155,9 @@ fn print_metrics_section(details: &HashMap<String, f32>, suffix: &str) {
     for (key, value) in metrics {
         let display_name = key.replace('_', " ").replace(suffix, "");
         if suffix == "_ratio" {
-            println!("  {display_name}: {value:.3} ({:.1}%)", value * 100.0);
+            println!("{display_name}: {value:.3} ({:.1}%)", value * 100.0);
         } else {
-            println!("  {display_name}: {value:.3}");
+            println!("{display_name}: {value:.3}");
         }
     }
     println!();

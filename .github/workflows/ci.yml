@@ -53,7 +53,7 @@ jobs:
     - name: Test examples
       run: |
         cargo run --example basic_usage
-        cargo run --example detailed_analysis
+        cargo run --example detailed_metrics
 
   coverage:
     name: Coverage
