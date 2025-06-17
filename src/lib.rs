@@ -52,7 +52,7 @@ impl fmt::Display for PowerReserveLevel {
 }
 
 /// Power Reserve Provider trait
-trait PowerReserveProvider {
+trait PowerReserveMeterProvider {
     /// Get current power reserve level
     async fn get_power_reserve_level(&self) -> PwrzvResult<u8>;
     /// Get current power reserve level and detailed information
@@ -61,7 +61,7 @@ trait PowerReserveProvider {
 }
 
 /// Platform-specific power reserve provider enum
-pub enum Provider {
+pub enum MeterProvider {
     #[cfg(target_os = "linux")]
     Linux(linux::LinuxProvider),
     #[cfg(target_os = "macos")]
@@ -70,16 +70,16 @@ pub enum Provider {
     Unsupported,
 }
 
-impl Provider {
+impl MeterProvider {
     /// Get current power reserve level
     pub async fn get_power_reserve_level(&self) -> PwrzvResult<u8> {
         match self {
             #[cfg(target_os = "linux")]
-            Provider::Linux(provider) => provider.get_power_reserve_level().await,
+            MeterProvider::Linux(provider) => provider.get_power_reserve_level().await,
             #[cfg(target_os = "macos")]
-            Provider::MacOS(provider) => provider.get_power_reserve_level().await,
+            MeterProvider::MacOS(provider) => provider.get_power_reserve_level().await,
             #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-            Provider::Unsupported => Err(PwrzvError::unsupported_platform(&format!(
+            MeterProvider::Unsupported => Err(PwrzvError::unsupported_platform(&format!(
                 "Platform '{}' is not supported yet. Only Linux and macOS are supported for now.",
                 std::env::consts::OS
             ))),
@@ -92,11 +92,11 @@ impl Provider {
     ) -> PwrzvResult<(u8, HashMap<String, f32>)> {
         match self {
             #[cfg(target_os = "linux")]
-            Provider::Linux(provider) => provider.get_power_reserve_level_with_details().await,
+            MeterProvider::Linux(provider) => provider.get_power_reserve_level_with_details().await,
             #[cfg(target_os = "macos")]
-            Provider::MacOS(provider) => provider.get_power_reserve_level_with_details().await,
+            MeterProvider::MacOS(provider) => provider.get_power_reserve_level_with_details().await,
             #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-            Provider::Unsupported => Err(PwrzvError::unsupported_platform(&format!(
+            MeterProvider::Unsupported => Err(PwrzvError::unsupported_platform(&format!(
                 "Platform '{}' is not supported yet. Only Linux and macOS are supported for now.",
                 std::env::consts::OS
             ))),
@@ -105,18 +105,18 @@ impl Provider {
 }
 
 /// Get current platform power reserve provider
-pub fn get_provider() -> Provider {
+pub fn get_meter_provider() -> MeterProvider {
     #[cfg(target_os = "linux")]
     {
-        Provider::Linux(linux::LinuxProvider)
+        MeterProvider::Linux(linux::LinuxProvider)
     }
     #[cfg(target_os = "macos")]
     {
-        Provider::MacOS(macos::MacProvider)
+        MeterProvider::MacOS(macos::MacProvider)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        Provider::Unsupported
+        MeterProvider::Unsupported
     }
 }
 
@@ -143,13 +143,13 @@ pub fn get_platform_name() -> &'static str {
 /// Get current system power reserve level (convenience function)
 pub async fn get_power_reserve_level() -> PwrzvResult<u8> {
     check_platform()?;
-    let provider = get_provider();
+    let provider = get_meter_provider();
     provider.get_power_reserve_level().await
 }
 
 /// Get current system power reserve level and detailed information (convenience function)
 pub async fn get_power_reserve_level_with_details() -> PwrzvResult<(u8, HashMap<String, f32>)> {
     check_platform()?;
-    let provider = get_provider();
+    let provider = get_meter_provider();
     provider.get_power_reserve_level_with_details().await
 }

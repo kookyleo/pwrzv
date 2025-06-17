@@ -2,18 +2,18 @@
 //!
 //! Shows comprehensive system metrics analysis
 
-use pwrzv::{PowerReserveLevel, PwrzvError, check_platform, get_provider};
+use pwrzv::{PowerReserveLevel, PwrzvError, check_platform, get_meter_provider};
 
 #[tokio::main]
 async fn main() -> Result<(), PwrzvError> {
     println!("=== pwrzv Detailed Metrics Example ===\n");
 
-    // Check platform and get provider
+    // Check platform and get meter provider
     check_platform()?;
-    let provider = get_provider();
+    let meter = get_meter_provider();
 
     // Get detailed system metrics
-    let (level_u8, details) = provider.get_power_reserve_level_with_details().await?;
+    let (level_u8, details) = meter.get_power_reserve_level_with_details().await?;
     let level = PowerReserveLevel::try_from(level_u8)?;
 
     println!("📊 System Metrics Analysis:");

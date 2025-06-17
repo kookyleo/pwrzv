@@ -8,7 +8,7 @@
 
 ![pwrzv](./assets/Pwrzv-in-Rolls-Royce.jpg)
 
-一个受劳斯莱斯汽车启发的 Linux 和 macOS 系统性能余量监控工具。
+一个受劳斯莱斯汽车仪表盘启发的 Linux 和 macOS 系统性能余量监控工具。
 优雅、简洁，专注于真正重要的事情：你的系统还有多少性能余量可供使用。
 
 ## ⚠️ Beta 阶段声明

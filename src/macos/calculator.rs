@@ -1,7 +1,7 @@
 use super::metrics::MacSystemMetrics;
 use crate::error::PwrzvResult;
 use crate::sigmoid::SigmoidFn;
-use crate::{PowerReserveLevel, PowerReserveProvider, PwrzvError};
+use crate::{PowerReserveLevel, PowerReserveMeterProvider, PwrzvError};
 use std::collections::HashMap;
 use std::env;
 
@@ -88,7 +88,7 @@ fn get_process_config() -> SigmoidFn {
 /// macOS power reserve provider
 pub struct MacProvider;
 
-impl PowerReserveProvider for MacProvider {
+impl PowerReserveMeterProvider for MacProvider {
     async fn get_power_reserve_level(&self) -> PwrzvResult<u8> {
         let metrics = MacSystemMetrics::collect().await?;
 

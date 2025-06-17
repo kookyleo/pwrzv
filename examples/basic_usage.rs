@@ -2,7 +2,7 @@
 //!
 //! Demonstrates how to use the pwrzv library for system monitoring
 
-use pwrzv::{PowerReserveLevel, PwrzvError, check_platform, get_provider};
+use pwrzv::{PowerReserveLevel, PwrzvError, check_platform, get_meter_provider};
 
 #[tokio::main]
 async fn main() -> Result<(), PwrzvError> {
@@ -18,11 +18,11 @@ async fn main() -> Result<(), PwrzvError> {
 
     println!("✅ Platform check passed!");
 
-    // Get platform-specific provider
-    let provider = get_provider();
+    // Get platform-specific meter provider
+    let meter = get_meter_provider();
 
     // Get power reserve level and details
-    let (level_u8, details) = match provider.get_power_reserve_level_with_details().await {
+    let (level_u8, details) = match meter.get_power_reserve_level_with_details().await {
         Ok((level, details)) => (level, details),
         Err(e) => {
             eprintln!("Failed to get system metrics: {e}");

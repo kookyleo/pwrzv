@@ -1,7 +1,7 @@
 use super::metrics::LinuxSystemMetrics;
 use crate::error::PwrzvResult;
 use crate::sigmoid::SigmoidFn;
-use crate::{PowerReserveLevel, PowerReserveProvider, PwrzvError};
+use crate::{PowerReserveLevel, PowerReserveMeterProvider, PwrzvError};
 use std::collections::HashMap;
 use std::env;
 
@@ -93,7 +93,7 @@ fn get_process_config() -> SigmoidFn {
 /// Linux power reserve provider
 pub struct LinuxProvider;
 
-impl PowerReserveProvider for LinuxProvider {
+impl PowerReserveMeterProvider for LinuxProvider {
     async fn get_power_reserve_level(&self) -> PwrzvResult<u8> {
         let metrics = LinuxSystemMetrics::collect().await?;
 
