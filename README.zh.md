@@ -99,11 +99,6 @@ cargo install pwrzv
 
 **pwrzv 暂只支持 Linux 和 macOS 系统。**其他平台将显示错误信息。
 
-检查平台兼容性：
-```bash
-pwrzv --check-platform
-```
-
 ### 平台特定实现
 
 - **Linux**: 使用 `/proc` 文件系统直接访问系统指标
@@ -114,23 +109,17 @@ pwrzv --check-platform
 ### 命令行界面
 
 ```bash
-# 基本使用
+# 基本使用（最简洁的数值输出）
 pwrzv
 
-# 详细组件分析
+# 详细组件分析（默认文本格式）
 pwrzv --detailed
 
-# JSON 输出
-pwrzv --format json
+# 详细分析 JSON 输出
+pwrzv --detailed json
 
-# YAML 输出
-pwrzv --format yaml
-
-# 静默模式（抑制警告）
-pwrzv --quiet
-
-# 检查平台兼容性
-pwrzv --check-platform
+# 详细分析 YAML 输出
+pwrzv --detailed yaml
 ```
 
 ### 库使用

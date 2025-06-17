@@ -100,11 +100,6 @@ cargo install pwrzv
 
 **pwrzv supports Linux and macOS systems** for now. Other platforms will display an error message.
 
-Check platform compatibility:
-```bash
-pwrzv --check-platform
-```
-
 ### Platform-Specific Implementation
 
 - **Linux**: Uses `/proc` filesystem for direct system metrics access
@@ -115,23 +110,17 @@ pwrzv --check-platform
 ### Command Line Interface
 
 ```bash
-# Basic usage
+# Basic usage (simplest numeric output)
 pwrzv
 
-# Detailed component analysis
+# Detailed component analysis (default text format)
 pwrzv --detailed
 
-# JSON output
-pwrzv --format json
+# Detailed analysis with JSON output
+pwrzv --detailed json
 
-# YAML output
-pwrzv --format yaml
-
-# Quiet mode (suppress warnings)
-pwrzv --quiet
-
-# Check platform compatibility
-pwrzv --check-platform
+# Detailed analysis with YAML output
+pwrzv --detailed yaml
 ```
 
 ### Library Usage

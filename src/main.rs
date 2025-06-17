@@ -39,33 +39,14 @@ fn build_cli() -> Command {
              \n\nSupported platforms: Linux, macOS",
         )
         .arg(
-            Arg::new("format")
-                .short('f')
-                .long("format")
-                .value_name("FORMAT")
-                .help("Output format")
-                .value_parser(["text", "json", "yaml"])
-                .default_value("text"),
-        )
-        .arg(
             Arg::new("detailed")
                 .short('d')
                 .long("detailed")
-                .help("Show detailed component scores")
-                .action(clap::ArgAction::SetTrue),
-        )
-        .arg(
-            Arg::new("quiet")
-                .short('q')
-                .long("quiet")
-                .help("Suppress warning messages")
-                .action(clap::ArgAction::SetTrue),
-        )
-        .arg(
-            Arg::new("check-platform")
-                .long("check-platform")
-                .help("Check platform compatibility and exit")
-                .action(clap::ArgAction::SetTrue),
+                .value_name("FORMAT")
+                .help("Show detailed component scores with optional format (text, json, yaml)")
+                .value_parser(["text", "json", "yaml"])
+                .num_args(0..=1)
+                .default_missing_value("text"),
         )
 }
 
@@ -79,12 +60,12 @@ async fn run(matches: ArgMatches) -> Result<(), PwrzvError> {
     }
 
     // Choose output method based on whether detailed information is needed
-    if matches.get_flag("detailed") {
+    if let Some(format) = matches.get_one::<String>("detailed") {
         let (level, details) = get_power_reserve_level_with_details().await?;
-        output_detailed_result(&matches, PowerReserveLevel::try_from(level)?, &details)?;
+        output_detailed_result(format, PowerReserveLevel::try_from(level)?, &details)?;
     } else {
         let level = get_power_reserve_level().await?;
-        eprintln!("{}", level as u8);
+        println!("{}", level as u8);
     }
 
     Ok(())
@@ -92,13 +73,11 @@ async fn run(matches: ArgMatches) -> Result<(), PwrzvError> {
 
 /// Output detailed result
 fn output_detailed_result(
-    matches: &ArgMatches,
+    format: &str,
     level: PowerReserveLevel,
     details: &HashMap<String, f32>,
 ) -> Result<(), PwrzvError> {
-    let format = matches.get_one::<String>("format").unwrap();
-
-    match format.as_str() {
+    match format {
         "json" => {
             let output = serde_json::json!({
                 "power_reserve_level": level as u8,
@@ -171,24 +150,27 @@ mod tests {
     fn test_cli_parsing() {
         let app = build_cli();
 
-        // Test default parameters
+        // Test default parameters (no detailed)
         let matches = app.try_get_matches_from(vec!["pwrzv"]).unwrap();
-        assert_eq!(matches.get_one::<String>("format").unwrap(), "text");
-        assert!(!matches.get_flag("detailed"));
-        assert!(!matches.get_flag("quiet"));
+        assert!(matches.get_one::<String>("detailed").is_none());
     }
 
     #[test]
     fn test_cli_with_args() {
+        // Test with detailed parameter
         let app = build_cli();
-
-        // Test with parameters
         let matches = app
-            .try_get_matches_from(vec!["pwrzv", "--format", "json", "--detailed", "--quiet"])
+            .try_get_matches_from(vec!["pwrzv", "--detailed", "json"])
             .unwrap();
 
-        assert_eq!(matches.get_one::<String>("format").unwrap(), "json");
-        assert!(matches.get_flag("detailed"));
-        assert!(matches.get_flag("quiet"));
+        assert_eq!(matches.get_one::<String>("detailed").unwrap(), "json");
+
+        // Test detailed without format (should default to text)
+        let app = build_cli();
+        let matches = app
+            .try_get_matches_from(vec!["pwrzv", "--detailed"])
+            .unwrap();
+
+        assert_eq!(matches.get_one::<String>("detailed").unwrap(), "text");
     }
 }
