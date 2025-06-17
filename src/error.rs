@@ -29,6 +29,10 @@ pub enum PwrzvError {
     /// Calculation error
     #[error("Calculation error: {detail}")]
     CalculationError { detail: String },
+
+    /// Invalid value error
+    #[error("Invalid value: {detail}")]
+    InvalidValue { detail: String },
 }
 
 impl PwrzvError {
@@ -56,6 +60,20 @@ impl PwrzvError {
     /// Create calculation error
     pub fn calculation_error(detail: &str) -> Self {
         PwrzvError::CalculationError {
+            detail: detail.to_string(),
+        }
+    }
+
+    /// Create collection error (alias for resource access error)
+    pub fn collection_error(detail: &str) -> Self {
+        PwrzvError::ResourceAccessError {
+            resource: detail.to_string(),
+        }
+    }
+
+    /// Create invalid value error
+    pub fn invalid_value(detail: &str) -> Self {
+        PwrzvError::InvalidValue {
             detail: detail.to_string(),
         }
     }

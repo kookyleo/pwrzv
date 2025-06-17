@@ -1,0 +1,557 @@
+use crate::error::{PwrzvError, PwrzvResult};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
+use std::time::{Duration, Instant};
+use tokio::time;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LinuxSystemMetrics {
+    /// CPU total usage ratio: `used / (cores × 100%)`
+    /// Range [0.0, 1.0], 1.0 means CPU is completely saturated
+    pub cpu_usage_ratio: f32,
+
+    /// CPU I/O wait ratio: `iowait / (user + system + iowait) × 100%`
+    /// Range [0.0, 1.0], approaching 1.0 means CPU is waiting for I/O operations
+    pub cpu_io_wait_ratio: f32,
+
+    /// CPU load ratio: `loadavg / cores`
+    /// Range [0.0, +∞], > 1.0 means tasks are queuing (various situations)
+    pub cpu_load_ratio: f32,
+
+    /// Memory usage ratio: `memory_usage_ratio = 1 - (MemAvailable / MemTotal)`
+    /// Range [0.0, 1.0], approaching 1.0 means memory usage is near saturation
+    pub memory_usage_ratio: f32,
+
+    /// Memory pressure
+    /// Based on some avg60 value in /proc/pressure/memory
+    /// Range [0.0, 1.0], approaching 1.0 means high memory pressure
+    pub memory_pressure_ratio: f32,
+
+    /// Disk I/O utilization: `%util / 100`
+    /// Range [0.0, 1.0], approaching 1.0 means disk device is overwhelmed
+    pub disk_io_ratio: f32,
+
+    /// Network bandwidth utilization: `used_bandwidth / max_bandwidth`
+    /// Range [0.0, 1.0], approaching 1.0 means link is saturated
+    pub network_bandwidth_ratio: f32,
+
+    /// File descriptor usage ratio: `used_fd / max_fd`
+    /// Range [0.0, 1.0], approaching 1.0 means connection/file handles are exhausted
+    pub fd_usage_ratio: f32,
+
+    /// Process count usage ratio: `proc_count / max_proc`
+    /// Range [0.0, 1.0], approaching 1.0 means process count reaches system limit
+    pub process_count_ratio: f32,
+}
+
+#[derive(Debug, Clone)]
+struct CpuStat {
+    user: u64,
+    nice: u64,
+    system: u64,
+    idle: u64,
+    iowait: u64,
+    irq: u64,
+    softirq: u64,
+    steal: u64,
+}
+
+#[derive(Debug, Clone)]
+struct DiskStat {
+    #[allow(dead_code)]
+    reads_completed: u64,
+    #[allow(dead_code)]
+    writes_completed: u64,
+    io_time_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+struct NetworkStat {
+    rx_bytes: u64,
+    tx_bytes: u64,
+}
+
+impl LinuxSystemMetrics {
+    /// Collect all system metrics in parallel
+    pub async fn collect() -> PwrzvResult<Self> {
+        // Start parallel sampling tasks
+        let cpu_task = tokio::spawn(Self::collect_cpu_metrics());
+        let memory_task = tokio::spawn(Self::collect_memory_metrics());
+        let disk_task = tokio::spawn(Self::collect_disk_metrics());
+        let network_task = tokio::spawn(Self::collect_network_metrics());
+        let fd_task = tokio::spawn(Self::collect_fd_metrics());
+        let process_task = tokio::spawn(Self::collect_process_metrics());
+
+        // Wait for all tasks to complete
+        let (cpu_result, memory_result, disk_result, network_result, fd_result, process_result) =
+            tokio::try_join!(
+                cpu_task,
+                memory_task,
+                disk_task,
+                network_task,
+                fd_task,
+                process_task
+            )
+            .map_err(|e| PwrzvError::collection_error(&format!("Task join failed: {e}")))?;
+
+        let (cpu_usage_ratio, cpu_io_wait_ratio, cpu_load_ratio) = cpu_result?;
+        let (memory_usage_ratio, memory_pressure_ratio) = memory_result?;
+        let disk_io_ratio = disk_result?;
+        let network_bandwidth_ratio = network_result?;
+        let fd_usage_ratio = fd_result?;
+        let process_count_ratio = process_result?;
+
+        Ok(LinuxSystemMetrics {
+            cpu_usage_ratio,
+            cpu_io_wait_ratio,
+            cpu_load_ratio,
+            memory_usage_ratio,
+            memory_pressure_ratio,
+            disk_io_ratio,
+            network_bandwidth_ratio,
+            fd_usage_ratio,
+            process_count_ratio,
+        })
+    }
+
+    /// Collect CPU-related metrics (requires sampling interval)
+    async fn collect_cpu_metrics() -> PwrzvResult<(f32, f32, f32)> {
+        // First sampling
+        let stat1 = Self::read_cpu_stat()?;
+        let _start_time = Instant::now();
+
+        // Wait for sampling interval
+        time::sleep(Duration::from_millis(500)).await;
+
+        // Second sampling
+        let stat2 = Self::read_cpu_stat()?;
+
+        // Calculate CPU usage and I/O wait ratio
+        let (cpu_usage_ratio, cpu_io_wait_ratio) = Self::calculate_cpu_usage(&stat1, &stat2)?;
+
+        // Read load average
+        let cpu_load_ratio = Self::read_load_average()?;
+
+        Ok((cpu_usage_ratio, cpu_io_wait_ratio, cpu_load_ratio))
+    }
+
+    /// Collect memory-related metrics
+    async fn collect_memory_metrics() -> PwrzvResult<(f32, f32)> {
+        let memory_usage_ratio = Self::read_memory_usage()?;
+        let memory_pressure_ratio = Self::read_memory_pressure().unwrap_or(0.0);
+        Ok((memory_usage_ratio, memory_pressure_ratio))
+    }
+
+    /// Collect disk I/O metrics (requires sampling interval)
+    async fn collect_disk_metrics() -> PwrzvResult<f32> {
+        // First sampling
+        let disk_stats1 = Self::read_disk_stats()?;
+
+        // Wait for sampling interval
+        time::sleep(Duration::from_millis(500)).await;
+
+        // Second sampling
+        let disk_stats2 = Self::read_disk_stats()?;
+
+        // Calculate disk utilization
+        Self::calculate_disk_utilization(&disk_stats1, &disk_stats2)
+    }
+
+    /// Collect network bandwidth metrics (requires sampling interval)
+    async fn collect_network_metrics() -> PwrzvResult<f32> {
+        // First sampling
+        let net_stats1 = Self::read_network_stats()?;
+
+        // Wait for sampling interval
+        time::sleep(Duration::from_millis(500)).await;
+
+        // Second sampling
+        let net_stats2 = Self::read_network_stats()?;
+
+        // Calculate network bandwidth utilization
+        Self::calculate_network_utilization(&net_stats1, &net_stats2)
+    }
+
+    /// Collect file descriptor metrics
+    async fn collect_fd_metrics() -> PwrzvResult<f32> {
+        Self::read_fd_usage()
+    }
+
+    /// Collect process count metrics
+    async fn collect_process_metrics() -> PwrzvResult<f32> {
+        Self::read_process_count()
+    }
+
+    /// Read CPU statistics
+    fn read_cpu_stat() -> PwrzvResult<CpuStat> {
+        let content = fs::read_to_string("/proc/stat").map_err(|e| {
+            PwrzvError::collection_error(&format!("Failed to read /proc/stat: {e}"))
+        })?;
+
+        let first_line = content
+            .lines()
+            .next()
+            .ok_or_else(|| PwrzvError::collection_error("Empty /proc/stat"))?;
+
+        let fields: Vec<&str> = first_line.split_whitespace().collect();
+        if fields.len() < 8 || fields[0] != "cpu" {
+            return Err(PwrzvError::collection_error("Invalid /proc/stat format"));
+        }
+
+        Ok(CpuStat {
+            user: fields[1]
+                .parse()
+                .map_err(|_| PwrzvError::collection_error("Invalid CPU user time"))?,
+            nice: fields[2]
+                .parse()
+                .map_err(|_| PwrzvError::collection_error("Invalid CPU nice time"))?,
+            system: fields[3]
+                .parse()
+                .map_err(|_| PwrzvError::collection_error("Invalid CPU system time"))?,
+            idle: fields[4]
+                .parse()
+                .map_err(|_| PwrzvError::collection_error("Invalid CPU idle time"))?,
+            iowait: fields[5]
+                .parse()
+                .map_err(|_| PwrzvError::collection_error("Invalid CPU iowait time"))?,
+            irq: fields[6]
+                .parse()
+                .map_err(|_| PwrzvError::collection_error("Invalid CPU irq time"))?,
+            softirq: fields[7]
+                .parse()
+                .map_err(|_| PwrzvError::collection_error("Invalid CPU softirq time"))?,
+            steal: if fields.len() > 8 {
+                fields[8].parse().unwrap_or(0)
+            } else {
+                0
+            },
+        })
+    }
+
+    /// Calculate CPU usage and I/O wait ratio
+    fn calculate_cpu_usage(stat1: &CpuStat, stat2: &CpuStat) -> PwrzvResult<(f32, f32)> {
+        let total1 = stat1.user
+            + stat1.nice
+            + stat1.system
+            + stat1.idle
+            + stat1.iowait
+            + stat1.irq
+            + stat1.softirq
+            + stat1.steal;
+        let total2 = stat2.user
+            + stat2.nice
+            + stat2.system
+            + stat2.idle
+            + stat2.iowait
+            + stat2.irq
+            + stat2.softirq
+            + stat2.steal;
+
+        let total_diff = total2.saturating_sub(total1);
+        if total_diff == 0 {
+            return Ok((0.0, 0.0));
+        }
+
+        let idle_diff = stat2.idle.saturating_sub(stat1.idle);
+        let iowait_diff = stat2.iowait.saturating_sub(stat1.iowait);
+
+        let cpu_usage_ratio = 1.0 - (idle_diff as f32 / total_diff as f32);
+        let cpu_io_wait_ratio = iowait_diff as f32 / total_diff as f32;
+
+        Ok((
+            cpu_usage_ratio.clamp(0.0, 1.0),
+            cpu_io_wait_ratio.clamp(0.0, 1.0),
+        ))
+    }
+
+    /// Read load average
+    fn read_load_average() -> PwrzvResult<f32> {
+        let content = fs::read_to_string("/proc/loadavg").map_err(|e| {
+            PwrzvError::collection_error(&format!("Failed to read /proc/loadavg: {e}"))
+        })?;
+
+        let fields: Vec<&str> = content.split_whitespace().collect();
+        if fields.is_empty() {
+            return Err(PwrzvError::collection_error("Empty /proc/loadavg"));
+        }
+
+        let load_1min: f32 = fields[0]
+            .parse()
+            .map_err(|_| PwrzvError::collection_error("Invalid load average format"))?;
+
+        // Get CPU core count
+        let cpu_cores = Self::get_cpu_cores()?;
+
+        Ok(load_1min / cpu_cores as f32)
+    }
+
+    /// Get CPU core count
+    fn get_cpu_cores() -> PwrzvResult<u32> {
+        let content = fs::read_to_string("/proc/cpuinfo").map_err(|e| {
+            PwrzvError::collection_error(&format!("Failed to read /proc/cpuinfo: {e}"))
+        })?;
+
+        let core_count = content
+            .lines()
+            .filter(|line| line.starts_with("processor"))
+            .count();
+
+        if core_count == 0 {
+            return Err(PwrzvError::collection_error("No CPU cores found"));
+        }
+
+        Ok(core_count as u32)
+    }
+
+    /// Read memory usage ratio
+    fn read_memory_usage() -> PwrzvResult<f32> {
+        let content = fs::read_to_string("/proc/meminfo").map_err(|e| {
+            PwrzvError::collection_error(&format!("Failed to read /proc/meminfo: {e}"))
+        })?;
+
+        let mut mem_total = 0u64;
+        let mut mem_available = 0u64;
+
+        for line in content.lines() {
+            if line.starts_with("MemTotal:") {
+                mem_total = Self::parse_meminfo_value(line)?;
+            } else if line.starts_with("MemAvailable:") {
+                mem_available = Self::parse_meminfo_value(line)?;
+            }
+        }
+
+        if mem_total == 0 {
+            return Err(PwrzvError::collection_error("MemTotal not found"));
+        }
+
+        let usage_ratio = 1.0 - (mem_available as f32 / mem_total as f32);
+        Ok(usage_ratio.clamp(0.0, 1.0))
+    }
+
+    /// Parse value from /proc/meminfo
+    fn parse_meminfo_value(line: &str) -> PwrzvResult<u64> {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 2 {
+            return Err(PwrzvError::collection_error("Invalid meminfo line format"));
+        }
+
+        parts[1]
+            .parse::<u64>()
+            .map_err(|_| PwrzvError::collection_error("Invalid meminfo value"))
+    }
+
+    /// Read memory pressure
+    #[allow(clippy::collapsible_if)]
+    fn read_memory_pressure() -> Option<f32> {
+        let content = fs::read_to_string("/proc/pressure/memory").ok()?;
+
+        for line in content.lines() {
+            if line.starts_with("some ") {
+                if let Some(avg60_part) = line
+                    .split_whitespace()
+                    .find(|part| part.starts_with("avg60="))
+                {
+                    if let Some(value_str) = avg60_part.strip_prefix("avg60=") {
+                        if let Ok(pressure_percent) = value_str.parse::<f32>() {
+                            return Some((pressure_percent / 100.0).min(1.0));
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Read disk statistics
+    fn read_disk_stats() -> PwrzvResult<HashMap<String, DiskStat>> {
+        let content = fs::read_to_string("/proc/diskstats").map_err(|e| {
+            PwrzvError::collection_error(&format!("Failed to read /proc/diskstats: {e}"))
+        })?;
+
+        let mut disk_stats = HashMap::new();
+
+        for line in content.lines() {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.len() >= 14 {
+                let device_name = fields[2];
+
+                // Only process major block devices
+                if !device_name.contains("loop")
+                    && !device_name.chars().last().unwrap_or('a').is_ascii_digit()
+                {
+                    let reads_completed = fields[3].parse().unwrap_or(0);
+                    let writes_completed = fields[7].parse().unwrap_or(0);
+                    let io_time_ms = fields[12].parse().unwrap_or(0);
+
+                    disk_stats.insert(
+                        device_name.to_string(),
+                        DiskStat {
+                            reads_completed,
+                            writes_completed,
+                            io_time_ms,
+                        },
+                    );
+                }
+            }
+        }
+
+        Ok(disk_stats)
+    }
+
+    /// Calculate disk utilization
+    fn calculate_disk_utilization(
+        stats1: &HashMap<String, DiskStat>,
+        stats2: &HashMap<String, DiskStat>,
+    ) -> PwrzvResult<f32> {
+        let mut total_utilization = 0.0;
+        let mut device_count = 0;
+
+        for (device, stat2) in stats2 {
+            if let Some(stat1) = stats1.get(device) {
+                let io_time_diff = stat2.io_time_ms.saturating_sub(stat1.io_time_ms);
+
+                // Assume sampling interval is 500ms, calculate utilization
+                let utilization = (io_time_diff as f32 / 500.0).min(1.0);
+
+                total_utilization += utilization;
+                device_count += 1;
+            }
+        }
+
+        if device_count > 0 {
+            Ok(total_utilization / device_count as f32)
+        } else {
+            Ok(0.0)
+        }
+    }
+
+    /// Read network statistics
+    fn read_network_stats() -> PwrzvResult<HashMap<String, NetworkStat>> {
+        let content = fs::read_to_string("/proc/net/dev").map_err(|e| {
+            PwrzvError::collection_error(&format!("Failed to read /proc/net/dev: {e}"))
+        })?;
+
+        let mut network_stats = HashMap::new();
+        let lines: Vec<&str> = content.lines().collect();
+
+        for line in lines.iter().skip(2) {
+            // Skip headers
+            if let Some(colon_pos) = line.find(':') {
+                let interface = line[..colon_pos].trim();
+                if interface != "lo" {
+                    // Skip loopback interface
+                    let stats = line[colon_pos + 1..].trim();
+                    let fields: Vec<&str> = stats.split_whitespace().collect();
+
+                    if fields.len() >= 9 {
+                        let rx_bytes = fields[0].parse().unwrap_or(0);
+                        let tx_bytes = fields[8].parse().unwrap_or(0);
+
+                        network_stats
+                            .insert(interface.to_string(), NetworkStat { rx_bytes, tx_bytes });
+                    }
+                }
+            }
+        }
+
+        Ok(network_stats)
+    }
+
+    /// Calculate network bandwidth utilization
+    fn calculate_network_utilization(
+        stats1: &HashMap<String, NetworkStat>,
+        stats2: &HashMap<String, NetworkStat>,
+    ) -> PwrzvResult<f32> {
+        let mut total_bytes_per_sec = 0u64;
+
+        for (interface, stat2) in stats2 {
+            if let Some(stat1) = stats1.get(interface) {
+                let rx_diff = stat2.rx_bytes.saturating_sub(stat1.rx_bytes);
+                let tx_diff = stat2.tx_bytes.saturating_sub(stat1.tx_bytes);
+
+                // Calculate bytes per second (sampling interval 500ms)
+                total_bytes_per_sec += (rx_diff + tx_diff) * 2;
+            }
+        }
+
+        // Assume gigabit network (1 Gbps = 125 MB/s)
+        let gigabit_bytes_per_sec = 125_000_000u64;
+        let utilization = (total_bytes_per_sec as f64 / gigabit_bytes_per_sec as f64).min(1.0);
+
+        Ok(utilization as f32)
+    }
+
+    /// Read file descriptor usage ratio
+    fn read_fd_usage() -> PwrzvResult<f32> {
+        let content = fs::read_to_string("/proc/sys/fs/file-nr").map_err(|e| {
+            PwrzvError::collection_error(&format!("Failed to read /proc/sys/fs/file-nr: {e}"))
+        })?;
+
+        let fields: Vec<&str> = content.split_whitespace().collect();
+        if fields.len() >= 3 {
+            let allocated: u64 = fields[0]
+                .parse()
+                .map_err(|_| PwrzvError::collection_error("Invalid allocated FDs"))?;
+            let max_fds: u64 = fields[2]
+                .parse()
+                .map_err(|_| PwrzvError::collection_error("Invalid max FDs"))?;
+
+            if max_fds > 0 {
+                let usage_ratio = (allocated as f64 / max_fds as f64).min(1.0);
+                return Ok(usage_ratio as f32);
+            }
+        }
+
+        Err(PwrzvError::collection_error("Invalid file-nr format"))
+    }
+
+    /// Read process count usage ratio
+    fn read_process_count() -> PwrzvResult<f32> {
+        // Get current process count
+        let proc_dir = fs::read_dir("/proc")
+            .map_err(|e| PwrzvError::collection_error(&format!("Failed to read /proc: {e}")))?;
+
+        let current_processes = proc_dir
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .chars()
+                    .all(|c| c.is_ascii_digit())
+            })
+            .count();
+
+        // Read maximum process count
+        let max_procs = if let Ok(content) = fs::read_to_string("/proc/sys/kernel/pid_max") {
+            content.trim().parse::<u64>().unwrap_or(32768)
+        } else {
+            32768 // Default value
+        };
+
+        let usage_ratio = (current_processes as f64 / max_procs as f64).min(1.0);
+        Ok(usage_ratio as f32)
+    }
+
+    /// Validate metric data validity
+    pub fn validate(&self) -> bool {
+        self.cpu_usage_ratio >= 0.0
+            && self.cpu_usage_ratio <= 1.0
+            && self.cpu_io_wait_ratio >= 0.0
+            && self.cpu_io_wait_ratio <= 1.0
+            && self.cpu_load_ratio >= 0.0
+            && self.memory_usage_ratio >= 0.0
+            && self.memory_usage_ratio <= 1.0
+            && self.memory_pressure_ratio >= 0.0
+            && self.memory_pressure_ratio <= 1.0
+            && self.disk_io_ratio >= 0.0
+            && self.disk_io_ratio <= 1.0
+            && self.network_bandwidth_ratio >= 0.0
+            && self.network_bandwidth_ratio <= 1.0
+            && self.fd_usage_ratio >= 0.0
+            && self.fd_usage_ratio <= 1.0
+            && self.process_count_ratio >= 0.0
+            && self.process_count_ratio <= 1.0
+    }
+}

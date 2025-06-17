@@ -1,23 +1,28 @@
-//! pwrzv - Linux System Power Reserve Meter
+//! pwrzv - A cross-platform system power reserve monitoring tool
 //!
-//! A Linux system performance monitoring tool inspired by Rolls-Royce Power Reserve gauge design
+//! Inspired by the Power Reserve gauge from Rolls-Royce cars
 
 use std::env;
 use std::process;
 
 use clap::{Arg, ArgMatches, Command};
-use pwrzv::{PowerReserveCalculator, PowerReserveLevel, PwrzvError, SystemMetrics, platform};
+use pwrzv::{
+    PowerReserveLevel, PwrzvError, check_platform, get_platform_name, get_power_reserve_level,
+    get_power_reserve_level_with_details,
+};
+use std::collections::HashMap;
 
 /// Application version
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Main function
-fn main() {
+#[tokio::main]
+async fn main() {
     // Parse command line arguments
     let matches = build_cli().get_matches();
 
-    // Execute different operations based on arguments
-    if let Err(e) = run(matches) {
+    // Execute different actions based on parameters
+    if let Err(e) = run(matches).await {
         eprintln!("Error: {e}");
         process::exit(1);
     }
@@ -27,11 +32,11 @@ fn main() {
 fn build_cli() -> Command {
     Command::new("pwrzv")
         .version(VERSION)
-        .about("A Rolls-Royce–inspired performance reserve meter for Linux systems")
+        .about("A cross-platform system power reserve monitoring tool inspired by Rolls-Royce cars")
         .long_about(
-            "pwrzv monitors Linux system resources and provides a 0-5 score \
-             representing available performance headroom, inspired by the \
-             Power Reserve gauge in Rolls-Royce cars.",
+            "pwrzv monitors system resources and provides power reserve level assessment, \
+             inspired by the Power Reserve gauge from Rolls-Royce cars.\
+             \n\nSupported platforms: Linux, macOS",
         )
         .arg(
             Arg::new("format")
@@ -53,7 +58,7 @@ fn build_cli() -> Command {
             Arg::new("quiet")
                 .short('q')
                 .long("quiet")
-                .help("Suppress warnings")
+                .help("Suppress warning messages")
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(
@@ -65,96 +70,21 @@ fn build_cli() -> Command {
 }
 
 /// Run main logic
-fn run(matches: ArgMatches) -> Result<(), PwrzvError> {
+async fn run(matches: ArgMatches) -> Result<(), PwrzvError> {
     // Check platform compatibility
-    if matches.get_flag("check-platform") {
-        return check_platform_command();
+    if let Err(e) = check_platform() {
+        eprintln!("❌ Platform check failed: {e}");
+        eprintln!("💡 Currently only Linux and macOS are supported");
+        process::exit(1);
     }
-
-    // Create calculator
-    let calculator = PowerReserveCalculator::new();
-
-    // Collect system metrics
-    let metrics = match calculator.collect_metrics() {
-        Ok(metrics) => metrics,
-        Err(e) => {
-            if matches.get_flag("quiet") {
-                // In quiet mode, use default metrics instead of exiting
-                SystemMetrics::default()
-            } else {
-                return Err(e);
-            }
-        }
-    };
 
     // Choose output method based on whether detailed information is needed
     if matches.get_flag("detailed") {
-        let detailed_score = calculator.calculate_detailed_score(&metrics)?;
-        output_detailed_result(&matches, &metrics, &detailed_score)?;
+        let (level, details) = get_power_reserve_level_with_details().await?;
+        output_detailed_result(&matches, PowerReserveLevel::try_from(level)?, &details)?;
     } else {
-        let score = calculator.calculate_power_reserve(&metrics)?;
-        output_simple_result(&matches, &metrics, score)?;
-    }
-
-    Ok(())
-}
-
-/// Check platform compatibility command
-fn check_platform_command() -> Result<(), PwrzvError> {
-    match platform::check_platform() {
-        Ok(()) => {
-            println!("Platform check: OK ({})", platform::get_platform_name());
-            println!("This system is supported by pwrzv.");
-            Ok(())
-        }
-        Err(e) => {
-            eprintln!("Platform check: FAILED");
-            eprintln!("Current platform: {}", platform::get_platform_name());
-            Err(e)
-        }
-    }
-}
-
-/// Output simple result
-fn output_simple_result(
-    matches: &ArgMatches,
-    metrics: &SystemMetrics,
-    score: u8,
-) -> Result<(), PwrzvError> {
-    let format = matches.get_one::<String>("format").unwrap();
-    let level = PowerReserveLevel::from_score(score);
-
-    match format.as_str() {
-        "json" => {
-            let output = serde_json::json!({
-                "power_reserve_score": score,
-                "level": level,
-                "metrics": metrics
-            });
-            println!("{}", serde_json::to_string_pretty(&output).unwrap());
-        }
-        "yaml" => {
-            let output = serde_json::json!({
-                "power_reserve_score": score,
-                "level": level,
-                "metrics": metrics
-            });
-            println!("{}", serde_yaml::to_string(&output).unwrap());
-        }
-        _ => {
-            // Default text format
-            println!("System Metrics:");
-            println!(
-                "  CPU Usage: {:.2}% (iowait: {:.2}%)",
-                metrics.cpu_usage, metrics.cpu_iowait
-            );
-            println!("  Memory Available: {:.2}%", metrics.mem_available);
-            println!("  Swap Usage: {:.2}%", metrics.swap_usage);
-            println!("  Disk I/O Usage: {:.2}%", metrics.disk_usage);
-            println!("  Network I/O Usage: {:.2}%", metrics.net_usage);
-            println!("  File Descriptor Usage: {:.2}%", metrics.fd_usage);
-            println!("Power Reserve Score: {score} ({level})");
-        }
+        let level = get_power_reserve_level().await?;
+        eprintln!("{}", level as u8);
     }
 
     Ok(())
@@ -163,110 +93,74 @@ fn output_simple_result(
 /// Output detailed result
 fn output_detailed_result(
     matches: &ArgMatches,
-    metrics: &SystemMetrics,
-    detailed_score: &pwrzv::calculator::DetailedScore,
+    level: PowerReserveLevel,
+    details: &HashMap<String, f32>,
 ) -> Result<(), PwrzvError> {
     let format = matches.get_one::<String>("format").unwrap();
 
     match format.as_str() {
         "json" => {
             let output = serde_json::json!({
-                "power_reserve_score": detailed_score.final_score,
-                "level": detailed_score.level,
-                "component_scores": detailed_score.component_scores,
-                "bottleneck": detailed_score.bottleneck,
-                "metrics": metrics
+                "power_reserve_level": level as u8,
+                "platform": get_platform_name(),
+                "detailed_metrics": details
             });
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
         }
         "yaml" => {
             let output = serde_json::json!({
-                "power_reserve_score": detailed_score.final_score,
-                "level": detailed_score.level,
-                "component_scores": detailed_score.component_scores,
-                "bottleneck": detailed_score.bottleneck,
-                "metrics": metrics
+                "power_reserve_level": level as u8,
+                "platform": get_platform_name(),
+                "detailed_metrics": details
             });
             println!("{}", serde_yaml::to_string(&output).unwrap());
         }
         _ => {
-            // Default text format
-            println!("=== System Power Reserve Analysis ===");
-            println!();
-            println!("System Metrics:");
-            println!(
-                "  CPU Usage: {:.2}% (iowait: {:.2}%)",
-                metrics.cpu_usage, metrics.cpu_iowait
-            );
-            println!("  Memory Available: {:.2}%", metrics.mem_available);
-            println!("  Swap Usage: {:.2}%", metrics.swap_usage);
-            println!("  Disk I/O Usage: {:.2}%", metrics.disk_usage);
-            println!("  Network I/O Usage: {:.2}%", metrics.net_usage);
-            println!("  File Descriptor Usage: {:.2}%", metrics.fd_usage);
-            println!();
-            println!("Component Scores (0-5):");
-            println!(
-                "  CPU:              {}",
-                detailed_score.component_scores.cpu
-            );
-            println!(
-                "  I/O Wait:         {}",
-                detailed_score.component_scores.iowait
-            );
-            println!(
-                "  Memory:           {}",
-                detailed_score.component_scores.memory
-            );
-            println!(
-                "  Swap:             {}",
-                detailed_score.component_scores.swap
-            );
-            println!(
-                "  Disk I/O:         {}",
-                detailed_score.component_scores.disk
-            );
-            println!(
-                "  Network I/O:      {}",
-                detailed_score.component_scores.network
-            );
-            println!(
-                "  File Descriptors: {}",
-                detailed_score.component_scores.file_descriptor
-            );
-            println!();
-            println!("Overall Assessment:");
-            println!(
-                "  Power Reserve Score: {} ({})",
-                detailed_score.final_score, detailed_score.level
-            );
-            println!("  Bottlenecks: {}", detailed_score.bottleneck);
+            // 默认文本格式
+            println!("=== System Power Reserve Detailed Analysis ===");
+            println!("Platform: {}", get_platform_name());
+            println!("Power Reserve Level: {}", level as u8);
             println!();
 
-            // Add recommendations
-            if detailed_score.final_score <= 2 {
-                println!("⚠️  Recommendations:");
-                if detailed_score.bottleneck.contains("CPU") {
-                    println!("   • Consider reducing CPU-intensive processes");
-                }
-                if detailed_score.bottleneck.contains("Memory") {
-                    println!("   • Free up memory or add more RAM");
-                }
-                if detailed_score.bottleneck.contains("Disk") {
-                    println!("   • Check for heavy disk I/O operations");
-                }
-                if detailed_score.bottleneck.contains("Network") {
-                    println!("   • Monitor network bandwidth usage");
-                }
-                if detailed_score.bottleneck.contains("File Descriptors") {
-                    println!("   • Check for file descriptor leaks");
-                }
-            } else if detailed_score.final_score >= 4 {
-                println!("✅ System has ample performance headroom.");
+            println!("=== System Metrics ===");
+            print_metrics_section(details, "_ratio");
+
+            println!("=== Pressure Scores ===");
+            print_metrics_section(details, "_score");
+
+            println!();
+            match level {
+                PowerReserveLevel::Abundant => println!("✅ System resources are abundant"),
+                PowerReserveLevel::High => println!("✅ System resources are sufficient"),
+                PowerReserveLevel::Medium => println!("⚠️ System resources are moderate"),
+                PowerReserveLevel::Low => println!("⚠️ System resources are limited"),
+                PowerReserveLevel::Critical => println!("🚨 System load is high"),
             }
         }
     }
 
     Ok(())
+}
+
+/// Print metrics section
+fn print_metrics_section(details: &HashMap<String, f32>, suffix: &str) {
+    let mut metrics: Vec<(String, f32)> = details
+        .iter()
+        .filter(|(key, _)| key.ends_with(suffix))
+        .map(|(key, value)| (key.clone(), *value))
+        .collect();
+
+    metrics.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (key, value) in metrics {
+        let display_name = key.replace('_', " ").replace(suffix, "");
+        if suffix == "_ratio" {
+            println!("  {display_name}: {value:.3} ({:.1}%)", value * 100.0);
+        } else {
+            println!("  {display_name}: {value:.3}");
+        }
+    }
+    println!();
 }
 
 #[cfg(test)]
