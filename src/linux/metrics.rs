@@ -6,7 +6,9 @@ use std::fs;
 /// Network statistics structure used by both platforms
 #[derive(Debug, Clone)]
 pub(crate) struct NetworkStats {
+    #[allow(dead_code)]
     pub(crate) rx_bytes: u64,
+    #[allow(dead_code)]
     pub(crate) tx_bytes: u64,
     pub(crate) rx_packets: u64,
     pub(crate) tx_packets: u64,
@@ -563,10 +565,10 @@ impl LinuxSystemMetrics {
         let mut total_packets = 0u64;
         let mut total_dropped = 0u64;
 
-        for (interface, stat) in stats {
+        for (_interface, stat) in stats {
             let interface_packets = stat.rx_packets + stat.tx_packets;
             let interface_dropped = stat.rx_dropped + stat.tx_dropped;
-            
+
             // Only count interfaces that have actual traffic (similar to macOS logic)
             if interface_packets > 0 {
                 total_packets += interface_packets;
@@ -608,78 +610,69 @@ mod tests {
         assert!(result.is_ok(), "System metrics collection should succeed");
 
         let metrics = result.unwrap();
-        println!("Collected metrics: {:#?}", metrics);
+        println!("Collected metrics: {metrics:#?}");
 
         // Validate individual metrics if they exist
         if let Some(cpu_usage) = metrics.cpu_usage_ratio {
             assert!(
                 (0.0..=1.0).contains(&cpu_usage),
-                "CPU usage should be in [0.0, 1.0], got: {}",
-                cpu_usage
+                "CPU usage should be in [0.0, 1.0], got: {cpu_usage}"
             );
         }
 
         if let Some(cpu_io_wait) = metrics.cpu_io_wait_ratio {
             assert!(
                 (0.0..=1.0).contains(&cpu_io_wait),
-                "CPU I/O wait should be in [0.0, 1.0], got: {}",
-                cpu_io_wait
+                "CPU I/O wait should be in [0.0, 1.0], got: {cpu_io_wait}"
             );
         }
 
         if let Some(load_ratio) = metrics.cpu_load_ratio {
             assert!(
                 load_ratio >= 0.0,
-                "CPU load ratio should be non-negative, got: {}",
-                load_ratio
+                "CPU load ratio should be non-negative, got: {load_ratio}"
             );
         }
 
         if let Some(memory_usage) = metrics.memory_usage_ratio {
             assert!(
                 (0.0..=1.0).contains(&memory_usage),
-                "Memory usage should be in [0.0, 1.0], got: {}",
-                memory_usage
+                "Memory usage should be in [0.0, 1.0], got: {memory_usage}"
             );
         }
 
         if let Some(memory_pressure) = metrics.memory_pressure_ratio {
             assert!(
                 (0.0..=1.0).contains(&memory_pressure),
-                "Memory pressure should be in [0.0, 1.0], got: {}",
-                memory_pressure
+                "Memory pressure should be in [0.0, 1.0], got: {memory_pressure}"
             );
         }
 
         if let Some(disk_io) = metrics.disk_io_utilization {
             assert!(
                 (0.0..=1.0).contains(&disk_io),
-                "Disk I/O should be in [0.0, 1.0], got: {}",
-                disk_io
+                "Disk I/O should be in [0.0, 1.0], got: {disk_io}"
             );
         }
 
         if let Some(network_drop) = metrics.network_dropped_packets_ratio {
             assert!(
                 (0.0..=1.0).contains(&network_drop),
-                "Network drop ratio should be in [0.0, 1.0], got: {}",
-                network_drop
+                "Network drop ratio should be in [0.0, 1.0], got: {network_drop}"
             );
         }
 
         if let Some(fd_usage) = metrics.fd_usage_ratio {
             assert!(
                 (0.0..=1.0).contains(&fd_usage),
-                "FD usage should be in [0.0, 1.0], got: {}",
-                fd_usage
+                "FD usage should be in [0.0, 1.0], got: {fd_usage}"
             );
         }
 
         if let Some(process_count) = metrics.process_count_ratio {
             assert!(
                 process_count >= 0.0,
-                "Process count ratio should be non-negative, got: {}",
-                process_count
+                "Process count ratio should be non-negative, got: {process_count}"
             );
         }
 
@@ -699,7 +692,7 @@ mod tests {
         .filter(|&&x| x)
         .count();
 
-        println!("Available metrics: {}/9", available_count);
+        println!("Available metrics: {available_count}/9");
 
         // We should have at least some metrics available
         assert!(
@@ -716,10 +709,7 @@ mod tests {
         let cpu_result = LinuxSystemMetrics::get_cpu_metrics_consolidated().await;
         assert!(cpu_result.is_ok(), "CPU metrics should be collectible");
         let (cpu_usage, cpu_io_wait, cpu_load) = cpu_result.unwrap();
-        println!(
-            "CPU metrics: usage={:?}, io_wait={:?}, load={:?}",
-            cpu_usage, cpu_io_wait, cpu_load
-        );
+        println!("CPU metrics: usage={cpu_usage:?}, io_wait={cpu_io_wait:?}, load={cpu_load:?}");
 
         // Test memory metrics
         let memory_result = LinuxSystemMetrics::get_memory_metrics_consolidated().await;
@@ -728,10 +718,7 @@ mod tests {
             "Memory metrics should be collectible"
         );
         let (memory_usage, memory_pressure) = memory_result.unwrap();
-        println!(
-            "Memory metrics: usage={:?}, pressure={:?}",
-            memory_usage, memory_pressure
-        );
+        println!("Memory metrics: usage={memory_usage:?}, pressure={memory_pressure:?}");
 
         // Test network metrics
         let network_result = LinuxSystemMetrics::get_network_metrics_consolidated().await;
@@ -740,19 +727,19 @@ mod tests {
             "Network metrics should be collectible"
         );
         let network_drop = network_result.unwrap();
-        println!("Network metrics: drop_ratio={:?}", network_drop);
+        println!("Network metrics: drop_ratio={network_drop:?}");
 
         // Test disk metrics
         let disk_result = LinuxSystemMetrics::get_disk_io_utilization_instant().await;
         assert!(disk_result.is_ok(), "Disk metrics should be collectible");
         let disk_io = disk_result.unwrap();
-        println!("Disk metrics: io_utilization={:?}", disk_io);
+        println!("Disk metrics: io_utilization={disk_io:?}");
 
         // Test FD usage
         let fd_result = LinuxSystemMetrics::get_fd_usage().await;
         assert!(fd_result.is_ok(), "FD metrics should be collectible");
         let fd_usage = fd_result.unwrap();
-        println!("FD metrics: usage={:?}", fd_usage);
+        println!("FD metrics: usage={fd_usage:?}");
 
         // Test process count
         let process_result = LinuxSystemMetrics::get_process_count().await;
@@ -761,7 +748,7 @@ mod tests {
             "Process metrics should be collectible"
         );
         let process_count = process_result.unwrap();
-        println!("Process metrics: count_ratio={:?}", process_count);
+        println!("Process metrics: count_ratio={process_count:?}");
     }
 
     #[tokio::test]
@@ -790,11 +777,11 @@ mod tests {
         let _ = LinuxSystemMetrics::get_process_count().await;
         let sequential_duration = start_sequential.elapsed();
 
-        println!("Parallel execution: {:?}", parallel_duration);
-        println!("Sequential execution: {:?}", sequential_duration);
+        println!("Parallel execution: {parallel_duration:?}");
+        println!("Sequential execution: {sequential_duration:?}");
 
         let improvement = sequential_duration.as_secs_f64() / parallel_duration.as_secs_f64();
-        println!("Performance improvement: {:.2}x", improvement);
+        println!("Performance improvement: {improvement:.2}x");
 
         // On non-Linux systems, many metrics may fail, so parallel vs sequential
         // performance comparison is not meaningful
@@ -928,7 +915,7 @@ mod tests {
         assert_eq!(cloned, metrics);
 
         // Test Debug
-        let debug_str = format!("{:?}", metrics);
+        let debug_str = format!("{metrics:?}");
         assert!(debug_str.contains("LinuxSystemMetrics"));
         assert!(debug_str.contains("cpu_usage_ratio"));
     }
@@ -1022,7 +1009,7 @@ mod tests {
                     println!("  ✅ Collection successful");
                 }
                 Err(e) => {
-                    println!("  ❌ Collection failed: {}", e);
+                    println!("  ❌ Collection failed: {e}");
                     all_successful = false;
                 }
             }
@@ -1056,8 +1043,7 @@ mod tests {
             // On Linux, we should have most metrics available
             assert!(
                 consistently_available >= 5,
-                "At least 5 metrics should be consistently available on Linux, got: {}",
-                consistently_available
+                "At least 5 metrics should be consistently available on Linux, got: {consistently_available}"
             );
         }
 
@@ -1073,10 +1059,7 @@ mod tests {
         }
 
         println!("Integration test summary:");
-        println!("  All collections successful: {}", all_successful);
-        println!(
-            "  Consistently available metrics: {}/9",
-            consistently_available
-        );
+        println!("  All collections successful: {all_successful}");
+        println!("  Consistently available metrics: {consistently_available}/9");
     }
 }

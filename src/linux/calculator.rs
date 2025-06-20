@@ -239,8 +239,7 @@ mod tests {
         for score in details.values() {
             assert!(
                 *score >= 1 && *score <= 5,
-                "Score {} should be in range [1, 5]",
-                score
+                "Score {score} should be in range [1, 5]"
             );
         }
 
