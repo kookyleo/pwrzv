@@ -600,7 +600,6 @@ struct DiskStat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
 
     #[tokio::test]
     async fn test_collect_system_metrics() {
