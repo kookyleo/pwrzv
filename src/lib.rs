@@ -404,7 +404,7 @@ mod tests {
 
         // Should be one of the supported platforms
         assert!(
-            platform == "Linux" || platform == "macos",
+            platform == "linux" || platform == "macos",
             "Platform should be Linux or macos, got: {platform}"
         );
     }
