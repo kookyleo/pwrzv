@@ -44,10 +44,6 @@ pub struct LinuxSystemMetrics {
     /// Range: [0.0, 1.0] where 1.0 means disk I/O is fully saturated
     pub disk_io_utilization: Option<f32>,
 
-    /// Network utilization: maximum interface utilization
-    /// Range: [0.0, 1.0] where 1.0 means network bandwidth is fully utilized
-    pub network_utilization: Option<f32>,
-
     /// Network packet drop ratio: dropped_packets / total_packets
     /// Range: [0.0, 1.0] where higher values indicate network issues
     pub network_dropped_packets_ratio: Option<f32>,
@@ -115,8 +111,7 @@ impl LinuxSystemMetrics {
         let (cpu_usage_ratio, cpu_io_wait_ratio, cpu_load_ratio) =
             cpu_result.unwrap_or((None, None, None));
         let (memory_usage_ratio, memory_pressure_ratio) = memory_result.unwrap_or((None, None));
-        let (network_utilization, network_dropped_packets_ratio) =
-            network_result.unwrap_or((None, None));
+        let network_dropped_packets_ratio = network_result.unwrap_or(None);
         let disk_io_utilization = disk_result.unwrap_or(None);
         let fd_usage_ratio = fd_result.unwrap_or(None);
         let process_count_ratio = process_result.unwrap_or(None);
@@ -128,7 +123,6 @@ impl LinuxSystemMetrics {
             memory_usage_ratio,
             memory_pressure_ratio,
             disk_io_utilization,
-            network_utilization,
             network_dropped_packets_ratio,
             fd_usage_ratio,
             process_count_ratio,
@@ -223,26 +217,24 @@ impl LinuxSystemMetrics {
     /// Get network metrics with consolidated /proc/net/dev read
     ///
     /// Uses a single `/proc/net/dev` read to retrieve network interface
-    /// statistics and calculates both utilization and drop ratios.
+    /// statistics and calculates drop ratio.
     ///
     /// # Returns
     ///
-    /// A tuple of `(network_utilization, network_dropped_packets_ratio)` where
-    /// each may be `None` if no network activity was detected or parsing failed.
-    pub(crate) async fn get_network_metrics_consolidated() -> PwrzvResult<(Option<f32>, Option<f32>)>
-    {
+    /// Network dropped packets ratio as `Option<f32>`, or `None` if no network
+    /// activity was detected or parsing failed.
+    pub(crate) async fn get_network_metrics_consolidated() -> PwrzvResult<Option<f32>> {
         let network_stats = match fs::read_to_string("/proc/net/dev") {
             Ok(content) => Self::parse_network_stats(&content),
-            Err(_) => return Ok((None, None)),
+            Err(_) => return Ok(None),
         };
 
         if let Some(stats) = network_stats {
-            // Calculate utilization and dropped packets ratio
-            let utilization = Self::calculate_instant_network_utilization(&stats);
+            // Calculate dropped packets ratio only
             let dropped_ratio = Self::calculate_instant_dropped_packets_ratio(&stats);
-            Ok((utilization, dropped_ratio))
+            Ok(dropped_ratio)
         } else {
-            Ok((None, None))
+            Ok(None)
         }
     }
 
@@ -564,37 +556,6 @@ impl LinuxSystemMetrics {
         }
     }
 
-    /// Get actual interface speed from system (in bytes per second)
-    fn get_interface_speed(interface: &str) -> u64 {
-        let speed_path = format!("/sys/class/net/{}/speed", interface);
-
-        if let Ok(speed_str) = fs::read_to_string(&speed_path) {
-            if let Ok(speed_mbps) = speed_str.trim().parse::<u64>() {
-                return speed_mbps * 1_000_000 / 8; // Convert Mbps to bytes/sec
-            }
-        }
-
-        // Default to 1 Gbps if speed cannot be determined
-        1_000_000_000 / 8
-    }
-
-    /// Calculate instant network utilization
-    fn calculate_instant_network_utilization(stats: &HashMap<String, NetworkStats>) -> Option<f32> {
-        let mut max_utilization = 0.0f32;
-
-        for (interface, stat) in stats {
-            let interface_speed = Self::get_interface_speed(interface);
-            let total_bytes = stat.rx_bytes + stat.tx_bytes;
-
-            if interface_speed > 0 {
-                let utilization = (total_bytes as f32 / interface_speed as f32 * 100.0).min(1.0);
-                max_utilization = max_utilization.max(utilization);
-            }
-        }
-
-        Some(max_utilization)
-    }
-
     /// Calculate instant dropped packets ratio
     fn calculate_instant_dropped_packets_ratio(
         stats: &HashMap<String, NetworkStats>,
@@ -602,13 +563,19 @@ impl LinuxSystemMetrics {
         let mut total_packets = 0u64;
         let mut total_dropped = 0u64;
 
-        for stat in stats.values() {
-            total_packets += stat.rx_packets + stat.tx_packets;
-            total_dropped += stat.rx_dropped + stat.tx_dropped;
+        for (interface, stat) in stats {
+            let interface_packets = stat.rx_packets + stat.tx_packets;
+            let interface_dropped = stat.rx_dropped + stat.tx_dropped;
+            
+            // Only count interfaces that have actual traffic (similar to macOS logic)
+            if interface_packets > 0 {
+                total_packets += interface_packets;
+                total_dropped += interface_dropped;
+            }
         }
 
         if total_packets == 0 {
-            return Some(0.0);
+            return None; // No interfaces with traffic, return None instead of 0.0
         }
 
         let dropped_ratio = total_dropped as f32 / total_packets as f32;
@@ -692,14 +659,6 @@ mod tests {
             );
         }
 
-        if let Some(network_util) = metrics.network_utilization {
-            assert!(
-                (0.0..=1.0).contains(&network_util),
-                "Network utilization should be in [0.0, 1.0], got: {}",
-                network_util
-            );
-        }
-
         if let Some(network_drop) = metrics.network_dropped_packets_ratio {
             assert!(
                 (0.0..=1.0).contains(&network_drop),
@@ -732,7 +691,6 @@ mod tests {
             metrics.memory_usage_ratio.is_some(),
             metrics.memory_pressure_ratio.is_some(),
             metrics.disk_io_utilization.is_some(),
-            metrics.network_utilization.is_some(),
             metrics.network_dropped_packets_ratio.is_some(),
             metrics.fd_usage_ratio.is_some(),
             metrics.process_count_ratio.is_some(),
@@ -741,7 +699,7 @@ mod tests {
         .filter(|&&x| x)
         .count();
 
-        println!("Available metrics: {}/10", available_count);
+        println!("Available metrics: {}/9", available_count);
 
         // We should have at least some metrics available
         assert!(
@@ -781,11 +739,8 @@ mod tests {
             network_result.is_ok(),
             "Network metrics should be collectible"
         );
-        let (network_util, network_drop) = network_result.unwrap();
-        println!(
-            "Network metrics: utilization={:?}, drop_ratio={:?}",
-            network_util, network_drop
-        );
+        let network_drop = network_result.unwrap();
+        println!("Network metrics: drop_ratio={:?}", network_drop);
 
         // Test disk metrics
         let disk_result = LinuxSystemMetrics::get_disk_io_utilization_instant().await;
@@ -939,7 +894,6 @@ mod tests {
             memory_usage_ratio: Some(0.7),
             memory_pressure_ratio: Some(0.2),
             disk_io_utilization: Some(0.3),
-            network_utilization: Some(0.4),
             network_dropped_packets_ratio: Some(0.01),
             fd_usage_ratio: Some(0.6),
             process_count_ratio: Some(0.8),
@@ -964,7 +918,6 @@ mod tests {
             memory_usage_ratio: Some(0.7),
             memory_pressure_ratio: Some(0.2),
             disk_io_utilization: Some(0.3),
-            network_utilization: Some(0.4),
             network_dropped_packets_ratio: Some(0.01),
             fd_usage_ratio: Some(0.6),
             process_count_ratio: Some(0.8),
@@ -1030,7 +983,7 @@ mod tests {
 
         // Test multiple collection cycles to ensure consistency
         let mut all_successful = true;
-        let mut metrics_availability = [0; 10]; // Track availability of each metric
+        let mut metrics_availability = [0; 9]; // Track availability of each metric
 
         for i in 0..3 {
             println!("Collection cycle {}", i + 1);
@@ -1055,17 +1008,15 @@ mod tests {
                     if metrics.disk_io_utilization.is_some() {
                         metrics_availability[5] += 1;
                     }
-                    if metrics.network_utilization.is_some() {
+
+                    if metrics.network_dropped_packets_ratio.is_some() {
                         metrics_availability[6] += 1;
                     }
-                    if metrics.network_dropped_packets_ratio.is_some() {
+                    if metrics.fd_usage_ratio.is_some() {
                         metrics_availability[7] += 1;
                     }
-                    if metrics.fd_usage_ratio.is_some() {
-                        metrics_availability[8] += 1;
-                    }
                     if metrics.process_count_ratio.is_some() {
-                        metrics_availability[9] += 1;
+                        metrics_availability[8] += 1;
                     }
 
                     println!("  ✅ Collection successful");
@@ -1088,7 +1039,6 @@ mod tests {
             "Memory usage",
             "Memory pressure",
             "Disk I/O",
-            "Network util",
             "Network drops",
             "FD usage",
             "Process count",
@@ -1125,7 +1075,7 @@ mod tests {
         println!("Integration test summary:");
         println!("  All collections successful: {}", all_successful);
         println!(
-            "  Consistently available metrics: {}/10",
+            "  Consistently available metrics: {}/9",
             consistently_available
         );
     }

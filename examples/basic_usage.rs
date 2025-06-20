@@ -27,7 +27,7 @@ async fn main() -> Result<(), PwrzvError> {
     let level_u8 = get_power_reserve_level_direct().await?;
     let level = PowerReserveLevel::try_from(level_u8)?;
 
-    println!("Power Reserve Level: {} ({}/5)", level, level_u8);
+    println!("Power Reserve Level: {level} ({level_u8}/5)");
 
     match level {
         PowerReserveLevel::Abundant => println!("🌟 Excellent! System has abundant resources."),
@@ -43,7 +43,7 @@ async fn main() -> Result<(), PwrzvError> {
 
     let (detailed_level, details) = get_power_reserve_level_with_details_direct().await?;
 
-    println!("Power Reserve Level: {}/5", detailed_level);
+    println!("Power Reserve Level: {detailed_level}/5");
     println!("Available Metrics: {}", details.len());
     println!();
 
@@ -65,7 +65,7 @@ async fn main() -> Result<(), PwrzvError> {
                 _ => "❓ Unknown",
             };
 
-            println!("  {:<30}: {} ({})", display_name, value, status);
+            println!("  {display_name:<30}: {value} ({status})");
         }
     }
 
@@ -75,7 +75,7 @@ async fn main() -> Result<(), PwrzvError> {
 
     for i in 1..=3 {
         let level = get_power_reserve_level_direct().await?;
-        println!("Sample {}: Power Reserve = {}/5", i, level);
+        println!("Sample {i}: Power Reserve = {level}/5");
 
         if i < 3 {
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;

@@ -16,7 +16,7 @@ async fn main() -> Result<(), PwrzvError> {
     let (level_u8, details) = get_power_reserve_level_with_details_direct().await?;
     let level = PowerReserveLevel::try_from(level_u8)?;
 
-    println!("Power Reserve Level: {} ({}/5)", level, level_u8);
+    println!("Power Reserve Level: {level} ({level_u8}/5)");
 
     let assessment = match level_u8 {
         5 => "🌟 Excellent - System running at optimal performance",
@@ -26,7 +26,7 @@ async fn main() -> Result<(), PwrzvError> {
         1 => "🚨 Critical - Immediate attention required",
         _ => "❓ Unknown state",
     };
-    println!("   {}", assessment);
+    println!("   {assessment}");
 
     if !details.is_empty() {
         println!("\n📊 Detailed Metrics ({} available):", details.len());
@@ -42,7 +42,7 @@ async fn main() -> Result<(), PwrzvError> {
     let mut samples = Vec::new();
 
     for i in 1..=3 {
-        println!("⏱️  Collecting sample {} of 3...", i);
+        println!("⏱️  Collecting sample {i} of 3...");
 
         let (sample_level, sample_details) = get_power_reserve_level_with_details_direct().await?;
         samples.push((i, sample_level, sample_details));
@@ -70,10 +70,7 @@ async fn main() -> Result<(), PwrzvError> {
             .map(|(_, v)| *v)
             .unwrap_or(3);
 
-        println!(
-            "   {:6} | {:5} | CPU: {}, Memory: {}",
-            sample_num, level, cpu_score, memory_score
-        );
+        println!("   {sample_num:6} | {level:5} | CPU: {cpu_score}, Memory: {memory_score}");
     }
 
     // Show if there's a trend
@@ -86,7 +83,7 @@ async fn main() -> Result<(), PwrzvError> {
         } else {
             "➡️ Stable"
         };
-        println!("\n🔄 Trend: {}", trend);
+        println!("\n🔄 Trend: {trend}");
     }
 
     // Example 3: Metric explanation
@@ -138,13 +135,13 @@ fn display_metrics_by_category(details: &std::collections::HashMap<String, u8>) 
             .collect();
 
         if !category_metrics.is_empty() {
-            println!("\n🔧 {}:", category_name);
+            println!("\n🔧 {category_name}:");
             let mut sorted_metrics = category_metrics;
             sorted_metrics.sort_by_key(|(k, _)| *k);
 
             for (key, value) in sorted_metrics {
                 let status = get_score_status(*value);
-                println!("   {:<35}: {} ({})", key, value, status);
+                println!("   {key:<35}: {value} ({status})");
             }
         }
     }
@@ -162,7 +159,7 @@ fn display_metrics_by_category(details: &std::collections::HashMap<String, u8>) 
 
         for (key, value) in sorted_other {
             let status = get_score_status(*value);
-            println!("   {:<35}: {} ({})", key, value, status);
+            println!("   {key:<35}: {value} ({status})");
         }
     }
 }

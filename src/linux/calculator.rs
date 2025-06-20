@@ -38,14 +38,9 @@ fn get_disk_io_config() -> SigmoidFn {
     get_sigmoid_config("PWRZV_LINUX_DISK_IO", 0.70, 10.0)
 }
 
-/// Get network bandwidth configuration (env: PWRZV_LINUX_NETWORK_MIDPOINT, PWRZV_LINUX_NETWORK_STEEPNESS)
-fn get_network_config() -> SigmoidFn {
-    get_sigmoid_config("PWRZV_LINUX_NETWORK", 0.80, 6.0)
-}
-
 /// Get network dropped packets configuration (env: PWRZV_LINUX_NETWORK_DROPPED_MIDPOINT, PWRZV_LINUX_NETWORK_DROPPED_STEEPNESS)
 fn get_network_dropped_config() -> SigmoidFn {
-    get_sigmoid_config("PWRZV_LINUX_NETWORK_DROPPED", 0.01, 50.0)
+    get_sigmoid_config("PWRZV_LINUX_NETWORK_DROPPED", 0.02, 100.0)
 }
 
 /// Get file descriptor configuration (env: PWRZV_LINUX_FD_MIDPOINT, PWRZV_LINUX_FD_STEEPNESS)
@@ -140,13 +135,6 @@ impl LinuxProvider {
             available_scores.push(n);
         }
 
-        if let Some(value) = metrics.network_utilization {
-            let score = get_network_config().evaluate(value);
-            let n = Self::five_point_scale(score);
-            details.insert(format!("Network Utilization: {value}, (Score: {n})"), n);
-            available_scores.push(n);
-        }
-
         if let Some(value) = metrics.network_dropped_packets_ratio {
             let score = get_network_dropped_config().evaluate(value);
             let n = Self::five_point_scale(score);
@@ -231,7 +219,6 @@ mod tests {
             memory_usage_ratio: Some(0.7),
             memory_pressure_ratio: Some(0.3),
             disk_io_utilization: Some(0.4),
-            network_utilization: Some(0.3),
             network_dropped_packets_ratio: Some(0.001),
             fd_usage_ratio: Some(0.5),
             process_count_ratio: Some(0.6),
@@ -246,7 +233,7 @@ mod tests {
         let (level, details) = result.unwrap();
 
         // Should have details for all provided metrics
-        assert_eq!(details.len(), 10, "Should have 10 metric details");
+        assert_eq!(details.len(), 9, "Should have 9 metric details");
 
         // All scores should be in valid range [1, 5]
         for score in details.values() {
@@ -277,7 +264,6 @@ mod tests {
             memory_usage_ratio: None,
             memory_pressure_ratio: None,
             disk_io_utilization: None,
-            network_utilization: None,
             network_dropped_packets_ratio: None,
             fd_usage_ratio: None,
             process_count_ratio: None,
@@ -308,7 +294,6 @@ mod tests {
             memory_usage_ratio: Some(0.5),
             memory_pressure_ratio: None,
             disk_io_utilization: None,
-            network_utilization: None,
             network_dropped_packets_ratio: None,
             fd_usage_ratio: None,
             process_count_ratio: None,
@@ -347,7 +332,6 @@ mod tests {
             memory_usage_ratio: Some(0.95),
             memory_pressure_ratio: Some(0.8),
             disk_io_utilization: Some(0.9),
-            network_utilization: Some(0.8),
             network_dropped_packets_ratio: Some(0.05),
             fd_usage_ratio: Some(0.9),
             process_count_ratio: Some(0.85),
@@ -383,7 +367,6 @@ mod tests {
             memory_usage_ratio: Some(0.4),
             memory_pressure_ratio: Some(0.1),
             disk_io_utilization: Some(0.2),
-            network_utilization: Some(0.1),
             network_dropped_packets_ratio: Some(0.0),
             fd_usage_ratio: Some(0.3),
             process_count_ratio: Some(0.4),

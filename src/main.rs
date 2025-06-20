@@ -136,10 +136,7 @@ async fn run(matches: ArgMatches) -> Result<(), PwrzvError> {
     // Continuous monitoring mode
     let output_interval = matches.get_one::<u64>("interval").copied().unwrap_or(3); // Default 3 second
 
-    eprintln!(
-        "🔄 Starting continuous monitoring (interval: {}s)",
-        output_interval
-    );
+    eprintln!("🔄 Starting continuous monitoring (interval: {output_interval}s)");
     eprintln!("💡 Press Ctrl+C to stop");
     eprintln!();
 

@@ -45,6 +45,7 @@ impl PwrzvError {
     }
 
     /// Create parsing error
+    #[allow(dead_code)]
     pub(crate) fn parse_error(detail: &str) -> Self {
         PwrzvError::ParseError {
             detail: detail.to_string(),
@@ -52,6 +53,7 @@ impl PwrzvError {
     }
 
     /// Create resource access error
+    #[allow(dead_code)]
     pub(crate) fn resource_access_error(resource: &str) -> Self {
         PwrzvError::ResourceAccessError {
             resource: resource.to_string(),
