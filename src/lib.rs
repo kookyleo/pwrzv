@@ -11,11 +11,11 @@
 //! ### Basic Usage
 //!
 //! ```rust
-//! use pwrzv::get_power_reserve_level;
+//! use pwrzv::get_power_reserve_level_direct;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let level = get_power_reserve_level().await?;
+//!     let level = get_power_reserve_level_direct().await?;
 //!     println!("Power Reserve Level: {}", level);
 //!     Ok(())
 //! }
@@ -24,11 +24,11 @@
 //! ### Detailed Analysis
 //!
 //! ```rust
-//! use pwrzv::{get_power_reserve_level_with_details, PowerReserveLevel};
+//! use pwrzv::{get_power_reserve_level_with_details_direct, PowerReserveLevel};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let (level, details) = get_power_reserve_level_with_details().await?;
+//!     let (level, details) = get_power_reserve_level_with_details_direct().await?;
 //!     let power_level = PowerReserveLevel::try_from(level)?;
 //!     
 //!     println!("Power Reserve: {} ({})", level, power_level);
@@ -42,13 +42,15 @@
 //!
 //! ## Architecture
 //!
-//! The library uses a multi-stage processing pipeline:
+//! The library uses a streamlined processing pipeline:
 //!
 //! 1. **Platform Detection**: Automatically detects Linux or macOS
-//! 2. **Metric Collection**: Gathers system metrics using platform-specific methods
-//! 3. **Normalization**: Converts raw values to 0-1 scale
-//! 4. **Sigmoid Transformation**: Applies configurable curves to each metric
-//! 5. **Scoring**: Calculates final 0-5 power reserve score
+//! 2. **Direct Metrics Collection**: Platform-specific calculator collects system metrics
+//! 3. **Real-time Processing**: Applies sigmoid transformations and calculates scores instantly
+//! 4. **Power Reserve Calculation**: Returns final 1-5 power reserve level
+//!
+//! All metrics are collected and processed in real-time without any intermediate storage,
+//! making the library fast and lightweight.
 //!
 //! ## Environment Variable Configuration
 //!
@@ -69,11 +71,11 @@
 //! All functions return `PwrzvResult<T>` which can be easily handled:
 //!
 //! ```rust
-//! use pwrzv::{get_power_reserve_level, PwrzvError};
+//! use pwrzv::{get_power_reserve_level_direct, PwrzvError};
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     match get_power_reserve_level().await {
+//!     match get_power_reserve_level_direct().await {
 //!         Ok(level) => println!("Power Reserve: {}", level),
 //!         Err(PwrzvError::UnsupportedPlatform { platform }) => {
 //!             eprintln!("Platform {} not supported", platform);
@@ -86,10 +88,18 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fmt};
 
+#[cfg(target_os = "linux")]
+use crate::linux::calculator::LinuxProvider;
+#[cfg(target_os = "macos")]
+use crate::macos::calculator::MacProvider;
+
 pub mod error;
-pub mod linux;
-pub mod macos;
-pub mod sigmoid;
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
+mod sigmoid;
+
 pub use error::{PwrzvError, PwrzvResult};
 
 /// Power Reserve Level
@@ -98,14 +108,27 @@ pub use error::{PwrzvError, PwrzvResult};
 pub enum PowerReserveLevel {
     /// Abundant: System resources are abundant, suitable for high-performance tasks
     Abundant = 5,
-    /// High: System resources are sufficient, suitable for moderate-performance tasks
+    /// High: System resources are in good condition
     High = 4,
-    /// Medium: System resources are moderate, recommend light tasks
+    /// Medium: System resources are in normal condition
     Medium = 3,
-    /// Low: System resources are limited, recommend reducing task execution
+    /// Low: System resources are under pressure, need to optimize resource usage
     Low = 2,
-    /// Critical: System resources are extremely limited, recommend pausing non-essential tasks
+    /// Critical: System resources are severely constrained, immediate action required
     Critical = 1,
+}
+
+impl fmt::Display for PowerReserveLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let level_str = match self {
+            PowerReserveLevel::Abundant => "Abundant",
+            PowerReserveLevel::High => "High",
+            PowerReserveLevel::Medium => "Medium",
+            PowerReserveLevel::Low => "Low",
+            PowerReserveLevel::Critical => "Critical",
+        };
+        write!(f, "{level_str}")
+    }
 }
 
 impl TryFrom<u8> for PowerReserveLevel {
@@ -124,119 +147,191 @@ impl TryFrom<u8> for PowerReserveLevel {
     }
 }
 
-impl fmt::Display for PowerReserveLevel {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PowerReserveLevel::Abundant => write!(f, "Abundant - System resources are abundant"),
-            PowerReserveLevel::High => write!(f, "High - System resources are sufficient"),
-            PowerReserveLevel::Medium => write!(f, "Medium - System resources are moderate"),
-            PowerReserveLevel::Low => write!(f, "Low - System resources are limited"),
-            PowerReserveLevel::Critical => write!(f, "Critical - System under heavy load"),
-        }
-    }
-}
-
-/// Power Reserve Provider trait
 trait PowerReserveMeterProvider {
-    /// Get current power reserve level
     async fn get_power_reserve_level(&self) -> PwrzvResult<u8>;
-    /// Get current power reserve level and detailed information
-    async fn get_power_reserve_level_with_details(&self)
-    -> PwrzvResult<(u8, HashMap<String, f32>)>;
+    async fn get_power_reserve_level_with_details(&self) -> PwrzvResult<(u8, HashMap<String, u8>)>;
 }
 
-/// Platform-specific power reserve provider enum
-pub enum MeterProvider {
+// ================================
+// Platform-specific power reserve calculator
+// ================================
+
+/// Platform-specific power reserve calculator enum
+#[derive(Clone, Debug)]
+enum Calculator {
     #[cfg(target_os = "linux")]
-    Linux(linux::LinuxProvider),
+    Linux(LinuxProvider),
     #[cfg(target_os = "macos")]
-    MacOS(macos::MacProvider),
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    Unsupported,
+    MacOS(MacProvider),
 }
 
-impl MeterProvider {
+impl Calculator {
+    /// Create calculator for the current platform
+    fn new() -> PwrzvResult<Self> {
+        #[cfg(target_os = "linux")]
+        {
+            Ok(Calculator::Linux(LinuxProvider))
+        }
+        #[cfg(target_os = "macos")]
+        {
+            Ok(Calculator::MacOS(MacProvider))
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            Err(PwrzvError::unsupported_platform(&format!(
+                "Platform '{}' is not supported yet. Only Linux and macOS are supported for now.",
+                std::env::consts::OS
+            )))
+        }
+    }
+
     /// Get current power reserve level
-    pub async fn get_power_reserve_level(&self) -> PwrzvResult<u8> {
-        match self {
-            #[cfg(target_os = "linux")]
-            MeterProvider::Linux(provider) => provider.get_power_reserve_level().await,
-            #[cfg(target_os = "macos")]
-            MeterProvider::MacOS(provider) => provider.get_power_reserve_level().await,
-            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-            MeterProvider::Unsupported => Err(PwrzvError::unsupported_platform(&format!(
-                "Platform '{}' is not supported yet. Only Linux and macOS are supported for now.",
-                std::env::consts::OS
-            ))),
+    async fn get_power_reserve_level(&self) -> PwrzvResult<u8> {
+        #[cfg(target_os = "linux")]
+        {
+            let Calculator::Linux(calc) = self;
+            return calc.get_power_reserve_level().await;
         }
-    }
-
-    /// Get current power reserve level and detailed information
-    pub async fn get_power_reserve_level_with_details(
-        &self,
-    ) -> PwrzvResult<(u8, HashMap<String, f32>)> {
-        match self {
-            #[cfg(target_os = "linux")]
-            MeterProvider::Linux(provider) => provider.get_power_reserve_level_with_details().await,
-            #[cfg(target_os = "macos")]
-            MeterProvider::MacOS(provider) => provider.get_power_reserve_level_with_details().await,
-            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-            MeterProvider::Unsupported => Err(PwrzvError::unsupported_platform(&format!(
-                "Platform '{}' is not supported yet. Only Linux and macOS are supported for now.",
-                std::env::consts::OS
-            ))),
+        #[cfg(target_os = "macos")]
+        {
+            let Calculator::MacOS(calc) = self;
+            return calc.get_power_reserve_level().await;
         }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        unreachable!("Calculator should only be created on supported platforms")
+    }
+
+    /// Get current power reserve level with detailed information
+    async fn get_power_reserve_level_with_details(&self) -> PwrzvResult<(u8, HashMap<String, u8>)> {
+        #[cfg(target_os = "linux")]
+        {
+            let Calculator::Linux(calc) = self;
+            return calc.get_power_reserve_level_with_details().await;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let Calculator::MacOS(calc) = self;
+            return calc.get_power_reserve_level_with_details().await;
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        unreachable!("Calculator should only be created on supported platforms")
     }
 }
 
-/// Get current platform power reserve provider
-pub fn get_meter_provider() -> MeterProvider {
-    #[cfg(target_os = "linux")]
-    {
-        MeterProvider::Linux(linux::LinuxProvider)
-    }
-    #[cfg(target_os = "macos")]
-    {
-        MeterProvider::MacOS(macos::MacProvider)
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        MeterProvider::Unsupported
-    }
-}
-
-/// Check if current platform is supported
-pub fn check_platform() -> PwrzvResult<()> {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    {
-        Ok(())
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        Err(PwrzvError::unsupported_platform(&format!(
-            "Platform '{}' is not supported yet. Only Linux and macOS are supported for now.",
-            std::env::consts::OS
-        )))
-    }
-}
-
-/// Get current platform name
+/// Get the current platform name
+///
+/// # Returns
+///
+/// A string representing the current platform ("linux", "macos", etc.)
 pub fn get_platform_name() -> &'static str {
     std::env::consts::OS
 }
 
-/// Get current system power reserve level (convenience function)
-pub async fn get_power_reserve_level() -> PwrzvResult<u8> {
-    check_platform()?;
-    let provider = get_meter_provider();
-    provider.get_power_reserve_level().await
+/// Get power reserve level directly without any intermediate storage
+///
+/// This function collects system metrics in real-time and calculates
+/// the power reserve level immediately.
+///
+/// # Returns
+///
+/// Power reserve level as u8 (1-5) where:
+/// - 5: Abundant resources
+/// - 4: High resources  
+/// - 3: Medium resources
+/// - 2: Low resources
+/// - 1: Critical resources
+///
+/// # Example
+///
+/// ```rust
+/// use pwrzv::get_power_reserve_level_direct;
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let level = get_power_reserve_level_direct().await?;
+///     println!("Power Reserve Level: {}", level);
+///     Ok(())
+/// }
+/// ```
+pub async fn get_power_reserve_level_direct() -> PwrzvResult<u8> {
+    let calculator = Calculator::new()?;
+    calculator.get_power_reserve_level().await
 }
 
-/// Get current system power reserve level and detailed information (convenience function)
-pub async fn get_power_reserve_level_with_details() -> PwrzvResult<(u8, HashMap<String, f32>)> {
-    check_platform()?;
-    let provider = get_meter_provider();
-    provider.get_power_reserve_level_with_details().await
+/// Get power reserve level with detailed metrics directly
+///
+/// This function collects system metrics in real-time and calculates both
+/// the overall power reserve level and detailed pressure scores for each metric.
+///
+/// # Returns
+///
+/// A tuple of (level, details) where:
+/// - level: Power reserve level as u8 (1-5)
+/// - details: HashMap containing pressure scores for each available metric
+///
+/// # Example
+///
+/// ```rust
+/// use pwrzv::get_power_reserve_level_with_details_direct;
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let (level, details) = get_power_reserve_level_with_details_direct().await?;
+///     
+///     println!("Power Reserve Level: {}", level);
+///     println!("Detailed metrics:");
+///     for (metric, score) in details {
+///         println!("  {}: {:.3}", metric, score);
+///     }
+///     Ok(())
+/// }
+/// ```
+pub async fn get_power_reserve_level_with_details_direct() -> PwrzvResult<(u8, HashMap<String, u8>)>
+{
+    let calculator = Calculator::new()?;
+    calculator.get_power_reserve_level_with_details().await
+}
+
+// Legacy API compatibility functions (deprecated, but kept for backward compatibility)
+
+/// Get power reserve level (legacy function, same as get_power_reserve_level_direct)
+///
+/// # Deprecated
+///
+/// Use `get_power_reserve_level_direct()` instead. This function is kept for
+/// backward compatibility but may be removed in future versions.
+pub async fn get_power_reserve_level() -> PwrzvResult<u8> {
+    get_power_reserve_level_direct().await
+}
+
+/// Get power reserve level with details (legacy function, same as get_power_reserve_level_with_details_direct)
+///
+/// # Deprecated
+///
+/// Use `get_power_reserve_level_with_details_direct()` instead. This function is kept for
+/// backward compatibility but may be removed in future versions.
+pub async fn get_power_reserve_level_with_details() -> PwrzvResult<(u8, HashMap<String, u8>)> {
+    get_power_reserve_level_with_details_direct().await
+}
+
+/// Check if the current platform is supported
+///
+/// # Returns
+///
+/// `Ok(())` if the platform is supported, `Err(PwrzvError)` otherwise.
+///
+/// # Example
+///
+/// ```rust
+/// use pwrzv::check_platform;
+///
+/// match check_platform() {
+///     Ok(()) => println!("Platform is supported"),
+///     Err(e) => eprintln!("Platform not supported: {}", e),
+/// }
+/// ```
+pub fn check_platform() -> PwrzvResult<()> {
+    Calculator::new().map(|_| ())
 }
 
 #[cfg(test)]
@@ -245,7 +340,17 @@ mod tests {
 
     #[test]
     fn test_power_reserve_level_enum() {
-        // Test all valid conversions
+        // Test enum values
+        assert_eq!(PowerReserveLevel::Abundant as u8, 5);
+        assert_eq!(PowerReserveLevel::High as u8, 4);
+        assert_eq!(PowerReserveLevel::Medium as u8, 3);
+        assert_eq!(PowerReserveLevel::Low as u8, 2);
+        assert_eq!(PowerReserveLevel::Critical as u8, 1);
+    }
+
+    #[test]
+    fn test_power_reserve_level_try_from() {
+        // Test valid conversions
         assert_eq!(
             PowerReserveLevel::try_from(5).unwrap(),
             PowerReserveLevel::Abundant
@@ -275,204 +380,128 @@ mod tests {
 
     #[test]
     fn test_power_reserve_level_display() {
-        assert_eq!(
-            PowerReserveLevel::Abundant.to_string(),
-            "Abundant - System resources are abundant"
-        );
-        assert_eq!(
-            PowerReserveLevel::High.to_string(),
-            "High - System resources are sufficient"
-        );
-        assert_eq!(
-            PowerReserveLevel::Medium.to_string(),
-            "Medium - System resources are moderate"
-        );
-        assert_eq!(
-            PowerReserveLevel::Low.to_string(),
-            "Low - System resources are limited"
-        );
-        assert_eq!(
-            PowerReserveLevel::Critical.to_string(),
-            "Critical - System under heavy load"
-        );
+        assert_eq!(format!("{}", PowerReserveLevel::Abundant), "Abundant");
+        assert_eq!(format!("{}", PowerReserveLevel::High), "High");
+        assert_eq!(format!("{}", PowerReserveLevel::Medium), "Medium");
+        assert_eq!(format!("{}", PowerReserveLevel::Low), "Low");
+        assert_eq!(format!("{}", PowerReserveLevel::Critical), "Critical");
     }
 
     #[test]
-    fn test_power_reserve_level_serialization() {
-        let level = PowerReserveLevel::High;
-        let json = serde_json::to_string(&level).unwrap();
-        assert_eq!(json, "\"High\"");
-
-        let deserialized: PowerReserveLevel = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized, PowerReserveLevel::High);
+    fn test_calculator_creation() {
+        // Calculator should be created successfully on supported platforms
+        let calculator = Calculator::new();
+        assert!(
+            calculator.is_ok(),
+            "Calculator creation should succeed on supported platforms"
+        );
     }
 
     #[test]
     fn test_get_platform_name() {
         let platform = get_platform_name();
-        assert!(!platform.is_empty());
+        assert!(!platform.is_empty(), "Platform name should not be empty");
 
-        // Should be one of the supported platforms in CI/test environments
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        {
-            assert!(platform == "linux" || platform == "macos");
-        }
+        // Should be one of the supported platforms
+        assert!(
+            platform == "Linux" || platform == "macos",
+            "Platform should be Linux or macos, got: {platform}"
+        );
     }
 
     #[test]
     fn test_check_platform() {
+        // Should succeed on supported platforms
         let result = check_platform();
+        assert!(
+            result.is_ok(),
+            "Platform check should succeed on supported platforms"
+        );
+    }
 
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        {
-            assert!(result.is_ok());
+    #[tokio::test]
+    async fn test_get_power_reserve_level_direct() {
+        // Should return a valid level
+        let result = get_power_reserve_level_direct().await;
+        assert!(
+            result.is_ok(),
+            "get_power_reserve_level_direct should succeed"
+        );
+
+        let level = result.unwrap();
+        assert!(
+            (1..=5).contains(&level),
+            "Level should be in range [1, 5], got: {level}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_power_reserve_level_with_details_direct() {
+        // Should return valid level and details
+        let result = get_power_reserve_level_with_details_direct().await;
+        assert!(
+            result.is_ok(),
+            "get_power_reserve_level_with_details_direct should succeed"
+        );
+
+        let (level, details) = result.unwrap();
+        assert!(
+            (1..=5).contains(&level),
+            "Level should be in range [1, 5], got: {level}"
+        );
+
+        // All detail scores should be in valid range
+        for (key, score) in &details {
+            assert!(
+                *score >= 1 && *score <= 5,
+                "Score for '{key}' should be in range [1, 5], got: {score}"
+            );
         }
+    }
 
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        {
-            assert!(result.is_err());
-            match result.unwrap_err() {
-                PwrzvError::UnsupportedPlatform { platform } => {
-                    assert!(!platform.is_empty());
-                }
-                _ => panic!("Expected UnsupportedPlatform error"),
-            }
+    #[tokio::test]
+    async fn test_legacy_compatibility_functions() {
+        // Test legacy functions still work
+        let result1 = get_power_reserve_level().await;
+        assert!(
+            result1.is_ok(),
+            "Legacy get_power_reserve_level should work"
+        );
+
+        let result2 = get_power_reserve_level_with_details().await;
+        assert!(
+            result2.is_ok(),
+            "Legacy get_power_reserve_level_with_details should work"
+        );
+
+        // Both functions should return valid results
+        let legacy_level = result1.unwrap();
+        let (legacy_detail_level, legacy_details) = result2.unwrap();
+
+        assert!(
+            (1..=5).contains(&legacy_level),
+            "Legacy level should be in range [1, 5], got: {legacy_level}"
+        );
+        assert!(
+            (1..=5).contains(&legacy_detail_level),
+            "Legacy detail level should be in range [1, 5], got: {legacy_detail_level}"
+        );
+
+        // All detail scores should be in valid range
+        for (key, score) in &legacy_details {
+            assert!(
+                *score >= 1 && *score <= 5,
+                "Score for '{key}' should be in range [1, 5], got: {score}"
+            );
         }
     }
 
     #[test]
-    fn test_get_meter_provider() {
-        let provider = get_meter_provider();
-
-        #[cfg(target_os = "linux")]
-        {
-            assert!(matches!(provider, MeterProvider::Linux(_)));
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            assert!(matches!(provider, MeterProvider::MacOS(_)));
-        }
-
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        {
-            assert!(matches!(provider, MeterProvider::Unsupported));
-        }
-    }
-
-    #[tokio::test]
-    async fn test_get_power_reserve_level_api() {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        {
-            let result = get_power_reserve_level().await;
-            match result {
-                Ok(level) => {
-                    assert!((1..=5).contains(&level));
-                }
-                Err(e) => {
-                    // Allow collection errors in test environments where system access might be limited
-                    match e {
-                        PwrzvError::ResourceAccessError { .. } => {}
-                        PwrzvError::IoError(_) => {}
-                        PwrzvError::CalculationError { .. } => {}
-                        _ => panic!("Unexpected error: {e}"),
-                    }
-                }
-            }
-        }
-
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        {
-            let result = get_power_reserve_level().await;
-            assert!(result.is_err());
-            assert!(matches!(
-                result.unwrap_err(),
-                PwrzvError::UnsupportedPlatform { .. }
-            ));
-        }
-    }
-
-    #[tokio::test]
-    async fn test_get_power_reserve_level_with_details_api() {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        {
-            let result = get_power_reserve_level_with_details().await;
-            match result {
-                Ok((level, details)) => {
-                    assert!((1..=5).contains(&level));
-                    assert!(!details.is_empty());
-
-                    // Verify that all detail values are in reasonable ranges
-                    for (key, value) in details {
-                        assert!(value.is_finite(), "Metric {key} has invalid value: {value}");
-
-                        // Ratio values should be between 0 and 1 (allowing some margin for edge cases)
-                        if key.ends_with("_ratio") {
-                            assert!(
-                                (0.0..=1.5).contains(&value),
-                                "Ratio metric {key} has invalid value: {value} (should be 0.0-1.0)"
-                            );
-                        }
-
-                        // Score values should be between 0 and 1
-                        if key.ends_with("_score") {
-                            assert!(
-                                (0.0..=1.0).contains(&value),
-                                "Score metric {key} has invalid value: {value} (should be 0.0-1.0)"
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    // Allow collection errors in test environments
-                    match e {
-                        PwrzvError::ResourceAccessError { .. } => {}
-                        PwrzvError::IoError(_) => {}
-                        PwrzvError::CalculationError { .. } => {}
-                        _ => panic!("Unexpected error: {e}"),
-                    }
-                }
-            }
-        }
-
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        {
-            let result = get_power_reserve_level_with_details().await;
-            assert!(result.is_err());
-            assert!(matches!(
-                result.unwrap_err(),
-                PwrzvError::UnsupportedPlatform { .. }
-            ));
-        }
-    }
-
-    #[tokio::test]
-    async fn test_meter_provider_consistency() {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        {
-            let provider = get_meter_provider();
-
-            // Test that the provider methods are consistent
-            let level_result = provider.get_power_reserve_level().await;
-            let details_result = provider.get_power_reserve_level_with_details().await;
-
-            match (level_result, details_result) {
-                (Ok(level1), Ok((level2, _))) => {
-                    // Allow some difference due to system state changes between calls
-                    // but they should be close (within 1 level)
-                    let diff = (level1 as i8 - level2 as i8).abs();
-                    assert!(
-                        diff <= 1,
-                        "Provider methods return levels too far apart: {level1} vs {level2}"
-                    );
-                }
-                (Err(_), Err(_)) => {
-                    // Both failed - acceptable in test environments
-                }
-                _ => {
-                    // One succeeded, one failed - potential issue but might be environmental
-                }
-            }
-        }
+    fn test_power_reserve_level_ordering() {
+        // Test that levels have correct numeric values for comparison
+        assert!(PowerReserveLevel::Abundant as u8 > PowerReserveLevel::High as u8);
+        assert!(PowerReserveLevel::High as u8 > PowerReserveLevel::Medium as u8);
+        assert!(PowerReserveLevel::Medium as u8 > PowerReserveLevel::Low as u8);
+        assert!(PowerReserveLevel::Low as u8 > PowerReserveLevel::Critical as u8);
     }
 }

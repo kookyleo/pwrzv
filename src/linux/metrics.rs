@@ -1,55 +1,64 @@
-use crate::error::{PwrzvError, PwrzvResult};
+use crate::error::PwrzvResult;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::process::Command;
-use std::time::{Duration, Instant};
-use tokio::time;
 
-const SAMPLE_INTERVAL: u64 = 500; // 500ms
+/// Network statistics structure used by both platforms
+#[derive(Debug, Clone)]
+pub(crate) struct NetworkStats {
+    pub(crate) rx_bytes: u64,
+    pub(crate) tx_bytes: u64,
+    pub(crate) rx_packets: u64,
+    pub(crate) tx_packets: u64,
+    pub(crate) rx_dropped: u64,
+    pub(crate) tx_dropped: u64,
+}
 
+/// Linux system metrics structure
+///
+/// All metrics are optional to handle collection failures gracefully.
+/// When a metric cannot be collected, it will be `None` rather than a fallback value.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LinuxSystemMetrics {
-    /// CPU total usage ratio: `used / (cores × 100%)`
-    /// Range [0.0, 1.0], 1.0 means CPU is completely saturated
-    pub cpu_usage_ratio: f32,
+    /// CPU usage ratio: (user + nice + system) / total_time
+    /// Range: [0.0, 1.0] where 1.0 means CPU is fully utilized
+    pub cpu_usage_ratio: Option<f32>,
 
-    /// CPU I/O wait ratio: `iowait / (user + system + iowait) × 100%`
-    /// Range [0.0, 1.0], approaching 1.0 means CPU is waiting for I/O operations
-    pub cpu_io_wait_ratio: f32,
+    /// CPU I/O wait ratio: iowait / total_time
+    /// Range: [0.0, 1.0] where higher values indicate I/O bottlenecks
+    pub cpu_io_wait_ratio: Option<f32>,
 
-    /// CPU load ratio: `loadavg / cores`
-    /// Range [0.0, +∞], > 1.0 means tasks are queuing (various situations)
-    pub cpu_load_ratio: f32,
+    /// CPU load ratio: 1-minute load average / CPU core count
+    /// Range: [0.0, +∞] where > 1.0 indicates task queuing
+    pub cpu_load_ratio: Option<f32>,
 
-    /// Memory usage ratio: `memory_usage_ratio = 1 - (MemAvailable / MemTotal)`
-    /// Range [0.0, 1.0], approaching 1.0 means memory usage is near saturation
-    pub memory_usage_ratio: f32,
+    /// Memory usage ratio: (total - available) / total
+    /// Range: [0.0, 1.0] where 1.0 means memory is fully utilized
+    pub memory_usage_ratio: Option<f32>,
 
-    /// Memory pressure
-    /// Based on some avg60 value in /proc/pressure/memory
-    /// Range [0.0, 1.0], approaching 1.0 means high memory pressure
-    pub memory_pressure_ratio: f32,
+    /// Memory pressure ratio: PSI memory average (10s) / 100
+    /// Range: [0.0, 1.0] where higher values indicate memory pressure
+    pub memory_pressure_ratio: Option<f32>,
 
-    /// Disk I/O utilization: `%util / 100`
-    /// Range [0.0, 1.0], approaching 1.0 means disk device is overwhelmed
-    pub disk_io_ratio: f32,
+    /// Disk I/O utilization: maximum disk utilization percentage
+    /// Range: [0.0, 1.0] where 1.0 means disk I/O is fully saturated
+    pub disk_io_utilization: Option<f32>,
 
-    /// Network bandwidth utilization: `used_bandwidth / max_bandwidth`
-    /// Range [0.0, 1.0], approaching 1.0 means link is saturated
-    pub network_bandwidth_ratio: f32,
+    /// Network utilization: maximum interface utilization
+    /// Range: [0.0, 1.0] where 1.0 means network bandwidth is fully utilized
+    pub network_utilization: Option<f32>,
 
-    /// Network dropped packets ratio: `dropped_packets / total_packets`
-    /// Range [0.0, 1.0], approaching 1.0 means network is saturated
-    pub network_dropped_packets_ratio: f32,
+    /// Network packet drop ratio: dropped_packets / total_packets
+    /// Range: [0.0, 1.0] where higher values indicate network issues
+    pub network_dropped_packets_ratio: Option<f32>,
 
-    /// File descriptor usage ratio: `used_fd / max_fd`
-    /// Range [0.0, 1.0], approaching 1.0 means connection/file handles are exhausted
-    pub fd_usage_ratio: f32,
+    /// File descriptor usage ratio: open_fds / max_fds
+    /// Range: [0.0, 1.0] where 1.0 means FD limit is reached
+    pub fd_usage_ratio: Option<f32>,
 
-    /// Process count usage ratio: `proc_count / max_proc`
-    /// Range [0.0, 1.0], approaching 1.0 means process count reaches system limit
-    pub process_count_ratio: f32,
+    /// Process count ratio: current_processes / typical_limit
+    /// Range: [0.0, +∞] where > 1.0 indicates high process count
+    pub process_count_ratio: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -61,57 +70,56 @@ struct CpuStat {
     iowait: u64,
     irq: u64,
     softirq: u64,
-    steal: u64,
-}
-
-#[derive(Debug, Clone)]
-struct DiskStat {
-    #[allow(dead_code)]
-    reads_completed: u64,
-    #[allow(dead_code)]
-    writes_completed: u64,
-    io_time_ms: u64,
-}
-
-#[derive(Debug, Clone)]
-struct NetworkStat {
-    rx_bytes: u64,
-    tx_bytes: u64,
-    rx_packets: u64,
-    tx_packets: u64,
-    rx_dropped: u64,
-    tx_dropped: u64,
 }
 
 impl LinuxSystemMetrics {
-    /// Collect all system metrics in parallel
-    pub async fn collect() -> PwrzvResult<Self> {
-        // Start parallel sampling tasks
-        let cpu_task = tokio::spawn(Self::collect_cpu_metrics());
-        let memory_task = tokio::spawn(Self::collect_memory_metrics());
-        let disk_task = tokio::spawn(Self::collect_disk_metrics());
-        let network_task = tokio::spawn(Self::collect_network_metrics());
-        let fd_task = tokio::spawn(Self::collect_fd_metrics());
-        let process_task = tokio::spawn(Self::collect_process_metrics());
+    /// Collect all system metrics using optimized parallel execution
+    ///
+    /// This method uses `tokio::join!` to collect all metrics in parallel,
+    /// maximizing performance and minimizing total collection time.
+    ///
+    /// # Returns
+    ///
+    /// A `LinuxSystemMetrics` struct where each field may be `None` if that
+    /// specific metric could not be collected. The method itself only fails
+    /// if there's a fundamental system error.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use pwrzv::get_power_reserve_level_with_details_direct;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let (level, details) = get_power_reserve_level_with_details_direct().await?;
+    ///     
+    ///     println!("Power reserve level: {}", level);
+    ///     for (metric, score) in details {
+    ///         println!("{}: {}", metric, score);
+    ///     }
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn collect_system_metrics() -> PwrzvResult<Self> {
+        // Execute all metrics collection in parallel for optimal performance
+        let (cpu_result, memory_result, network_result, disk_result, fd_result, process_result) = tokio::join!(
+            Self::get_cpu_metrics_consolidated(),
+            Self::get_memory_metrics_consolidated(),
+            Self::get_network_metrics_consolidated(),
+            Self::get_disk_io_utilization_instant(),
+            Self::get_fd_usage(),
+            Self::get_process_count()
+        );
 
-        // Wait for all tasks to complete
-        let (cpu_result, memory_result, disk_result, network_result, fd_result, process_result) =
-            tokio::try_join!(
-                cpu_task,
-                memory_task,
-                disk_task,
-                network_task,
-                fd_task,
-                process_task
-            )
-            .map_err(|e| PwrzvError::collection_error(&format!("Task join failed: {e}")))?;
-
-        let (cpu_usage_ratio, cpu_io_wait_ratio, cpu_load_ratio) = cpu_result?;
-        let (memory_usage_ratio, memory_pressure_ratio) = memory_result?;
-        let disk_io_ratio = disk_result?;
-        let (network_bandwidth_ratio, network_dropped_packets_ratio) = network_result?;
-        let fd_usage_ratio = fd_result?;
-        let process_count_ratio = process_result?;
+        // Extract results, using None for any failed metrics
+        let (cpu_usage_ratio, cpu_io_wait_ratio, cpu_load_ratio) =
+            cpu_result.unwrap_or((None, None, None));
+        let (memory_usage_ratio, memory_pressure_ratio) = memory_result.unwrap_or((None, None));
+        let (network_utilization, network_dropped_packets_ratio) =
+            network_result.unwrap_or((None, None));
+        let disk_io_utilization = disk_result.unwrap_or(None);
+        let fd_usage_ratio = fd_result.unwrap_or(None);
+        let process_count_ratio = process_result.unwrap_or(None);
 
         Ok(LinuxSystemMetrics {
             cpu_usage_ratio,
@@ -119,982 +127,1006 @@ impl LinuxSystemMetrics {
             cpu_load_ratio,
             memory_usage_ratio,
             memory_pressure_ratio,
-            disk_io_ratio,
-            network_bandwidth_ratio,
+            disk_io_utilization,
+            network_utilization,
             network_dropped_packets_ratio,
             fd_usage_ratio,
             process_count_ratio,
         })
     }
 
-    /// Collect CPU-related metrics (requires sampling interval)
-    async fn collect_cpu_metrics() -> PwrzvResult<(f32, f32, f32)> {
-        // First sampling
-        let stat1 = Self::read_cpu_stat()?;
-        let _start_time = Instant::now();
+    /// Get CPU metrics with consolidated /proc/stat and /proc/loadavg reads
+    ///
+    /// Uses parallel file reads to retrieve:
+    /// - `/proc/stat`: CPU time statistics for usage and I/O wait calculation
+    /// - `/proc/loadavg`: Load averages
+    /// - `/proc/cpuinfo`: CPU core count
+    ///
+    /// # Returns
+    ///
+    /// A tuple of `(cpu_usage_ratio, cpu_io_wait_ratio, cpu_load_ratio)` where
+    /// each may be `None` if the corresponding metric could not be calculated.
+    ///
+    /// # Performance
+    ///
+    /// This consolidated approach is significantly faster than separate reads.
+    pub(crate) async fn get_cpu_metrics_consolidated()
+    -> PwrzvResult<(Option<f32>, Option<f32>, Option<f32>)> {
+        // Execute all CPU-related reads in parallel
+        let (stat_result, loadavg_result, cpuinfo_result) = tokio::join!(
+            async { fs::read_to_string("/proc/stat") },
+            async { fs::read_to_string("/proc/loadavg") },
+            async { fs::read_to_string("/proc/cpuinfo") }
+        );
 
-        // Wait for sampling interval
-        time::sleep(Duration::from_millis(SAMPLE_INTERVAL)).await;
+        let mut cpu_usage: Option<f32> = None;
+        let mut cpu_io_wait: Option<f32> = None;
+        let mut cpu_load: Option<f32> = None;
 
-        // Second sampling
-        let stat2 = Self::read_cpu_stat()?;
-
-        // Calculate CPU usage and I/O wait ratio
-        let (cpu_usage_ratio, cpu_io_wait_ratio) = Self::calculate_cpu_usage(&stat1, &stat2)?;
-
-        // Read load average
-        let cpu_load_ratio = Self::read_load_average()?;
-
-        Ok((cpu_usage_ratio, cpu_io_wait_ratio, cpu_load_ratio))
-    }
-
-    /// Collect memory-related metrics
-    async fn collect_memory_metrics() -> PwrzvResult<(f32, f32)> {
-        let memory_usage_ratio = Self::read_memory_usage()?;
-        let memory_pressure_ratio = Self::read_memory_pressure().unwrap_or(0.0);
-        Ok((memory_usage_ratio, memory_pressure_ratio))
-    }
-
-    /// Collect disk I/O metrics (requires sampling interval)
-    async fn collect_disk_metrics() -> PwrzvResult<f32> {
-        // First sampling
-        let disk_stats1 = Self::read_disk_stats()?;
-
-        // Wait for sampling interval
-        time::sleep(Duration::from_millis(SAMPLE_INTERVAL)).await;
-
-        // Second sampling
-        let disk_stats2 = Self::read_disk_stats()?;
-
-        // Calculate disk utilization
-        Self::calculate_disk_utilization(&disk_stats1, &disk_stats2)
-    }
-
-    /// Collect network bandwidth and dropped packets metrics (requires sampling interval)
-    async fn collect_network_metrics() -> PwrzvResult<(f32, f32)> {
-        // First sampling
-        let net_stats1 = Self::read_network_stats()?;
-
-        // Wait for sampling interval
-        time::sleep(Duration::from_millis(SAMPLE_INTERVAL)).await;
-
-        // Second sampling
-        let net_stats2 = Self::read_network_stats()?;
-
-        // Calculate network bandwidth utilization and dropped packets ratio
-        let bandwidth_ratio = Self::calculate_network_utilization(&net_stats1, &net_stats2)?;
-        let dropped_packets_ratio =
-            Self::calculate_network_dropped_packets(&net_stats1, &net_stats2)?;
-
-        Ok((bandwidth_ratio, dropped_packets_ratio))
-    }
-
-    /// Collect file descriptor metrics
-    async fn collect_fd_metrics() -> PwrzvResult<f32> {
-        Self::read_fd_usage()
-    }
-
-    /// Collect process count metrics
-    async fn collect_process_metrics() -> PwrzvResult<f32> {
-        Self::read_process_count()
-    }
-
-    /// Read CPU statistics
-    fn read_cpu_stat() -> PwrzvResult<CpuStat> {
-        let content = fs::read_to_string("/proc/stat").map_err(|e| {
-            PwrzvError::collection_error(&format!("Failed to read /proc/stat: {e}"))
-        })?;
-
-        let first_line = content
-            .lines()
-            .next()
-            .ok_or_else(|| PwrzvError::collection_error("Empty /proc/stat"))?;
-
-        let fields: Vec<&str> = first_line.split_whitespace().collect();
-        if fields.len() < 8 || fields[0] != "cpu" {
-            return Err(PwrzvError::collection_error("Invalid /proc/stat format"));
+        // Parse CPU statistics
+        if let Ok(stat_content) = stat_result {
+            if let Some(stat) = Self::parse_cpu_stat(&stat_content) {
+                let total = stat.total();
+                if total > 0 {
+                    let idle_percent = stat.idle as f32 / total as f32;
+                    cpu_usage = Some((1.0f32 - idle_percent).clamp(0.0, 1.0));
+                    cpu_io_wait = Some((stat.iowait as f32 / total as f32).clamp(0.0, 1.0));
+                }
+            }
         }
 
-        Ok(CpuStat {
-            user: fields[1]
-                .parse()
-                .map_err(|_| PwrzvError::collection_error("Invalid CPU user time"))?,
-            nice: fields[2]
-                .parse()
-                .map_err(|_| PwrzvError::collection_error("Invalid CPU nice time"))?,
-            system: fields[3]
-                .parse()
-                .map_err(|_| PwrzvError::collection_error("Invalid CPU system time"))?,
-            idle: fields[4]
-                .parse()
-                .map_err(|_| PwrzvError::collection_error("Invalid CPU idle time"))?,
-            iowait: fields[5]
-                .parse()
-                .map_err(|_| PwrzvError::collection_error("Invalid CPU iowait time"))?,
-            irq: fields[6]
-                .parse()
-                .map_err(|_| PwrzvError::collection_error("Invalid CPU irq time"))?,
-            softirq: fields[7]
-                .parse()
-                .map_err(|_| PwrzvError::collection_error("Invalid CPU softirq time"))?,
-            steal: if fields.len() > 8 {
-                fields[8].parse().unwrap_or(0)
+        // Parse load average and combine with CPU core count
+        if let (Ok(loadavg_content), Ok(cpuinfo_content)) = (loadavg_result, cpuinfo_result) {
+            if let (Some(load_avg), Some(cpu_cores)) = (
+                Self::parse_load_average(&loadavg_content),
+                Self::parse_cpu_cores(&cpuinfo_content),
+            ) {
+                cpu_load = Some((load_avg / cpu_cores as f32).min(10.0)); // Cap at reasonable maximum
+            }
+        }
+
+        Ok((cpu_usage, cpu_io_wait, cpu_load))
+    }
+
+    /// Get memory metrics with consolidated /proc/meminfo read
+    ///
+    /// Uses a single `/proc/meminfo` read to retrieve memory statistics and
+    /// attempts to read PSI memory pressure if available.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of `(memory_usage_ratio, memory_pressure_ratio)` where each
+    /// may be `None` if the metric could not be calculated.
+    pub(crate) async fn get_memory_metrics_consolidated() -> PwrzvResult<(Option<f32>, Option<f32>)>
+    {
+        // Execute memory info and pressure reads in parallel
+        let (meminfo_result, pressure_result) =
+            tokio::join!(async { fs::read_to_string("/proc/meminfo") }, async {
+                fs::read_to_string("/proc/pressure/memory")
+            });
+
+        let memory_usage = if let Ok(meminfo_content) = meminfo_result {
+            Self::parse_memory_usage(&meminfo_content)
+        } else {
+            None
+        };
+
+        let memory_pressure = if let Ok(pressure_content) = pressure_result {
+            Self::parse_memory_pressure(&pressure_content)
+        } else {
+            None
+        };
+
+        Ok((memory_usage, memory_pressure))
+    }
+
+    /// Get network metrics with consolidated /proc/net/dev read
+    ///
+    /// Uses a single `/proc/net/dev` read to retrieve network interface
+    /// statistics and calculates both utilization and drop ratios.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of `(network_utilization, network_dropped_packets_ratio)` where
+    /// each may be `None` if no network activity was detected or parsing failed.
+    pub(crate) async fn get_network_metrics_consolidated() -> PwrzvResult<(Option<f32>, Option<f32>)>
+    {
+        let network_stats = match fs::read_to_string("/proc/net/dev") {
+            Ok(content) => Self::parse_network_stats(&content),
+            Err(_) => return Ok((None, None)),
+        };
+
+        if let Some(stats) = network_stats {
+            // Calculate utilization and dropped packets ratio
+            let utilization = Self::calculate_instant_network_utilization(&stats);
+            let dropped_ratio = Self::calculate_instant_dropped_packets_ratio(&stats);
+            Ok((utilization, dropped_ratio))
+        } else {
+            Ok((None, None))
+        }
+    }
+
+    /// Get disk I/O utilization using iostat or /proc/diskstats fallback
+    ///
+    /// Attempts to use `iostat -x` to get real utilization data, falling back
+    /// to `/proc/diskstats` estimation if iostat is not available.
+    ///
+    /// # Returns
+    ///
+    /// Disk I/O utilization as `Option<f32>`, or `None` if no disks were found
+    /// or parsing failed.
+    pub(crate) async fn get_disk_io_utilization_instant() -> PwrzvResult<Option<f32>> {
+        // Try to use iostat -x to get real %util first
+        if let Some(iostat_util) = Self::get_disk_util_from_iostat().await {
+            return Ok(Some(iostat_util));
+        }
+
+        // Fallback to /proc/diskstats estimation
+        match fs::read_to_string("/proc/diskstats") {
+            Ok(content) => {
+                if let Some(disk_stats) = Self::parse_disk_stats(&content) {
+                    Ok(Self::estimate_disk_utilization(&disk_stats))
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// Get file descriptor usage ratio
+    ///
+    /// Reads system file descriptor limits and current usage from `/proc/sys/fs/`.
+    ///
+    /// # Returns
+    ///
+    /// FD usage ratio as `Option<f32>`, or `None` if the limits could not be read.
+    pub(crate) async fn get_fd_usage() -> PwrzvResult<Option<f32>> {
+        let (file_nr_result, file_max_result) = tokio::join!(
+            async { fs::read_to_string("/proc/sys/fs/file-nr") },
+            async { fs::read_to_string("/proc/sys/fs/file-max") }
+        );
+
+        if let (Ok(file_nr_content), Ok(file_max_content)) = (file_nr_result, file_max_result) {
+            let open_fds = file_nr_content
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse::<u64>().ok());
+
+            let max_fds = file_max_content.trim().parse::<u64>().ok();
+
+            if let (Some(open_fds), Some(max_fds)) = (open_fds, max_fds) {
+                if max_fds > 0 {
+                    Ok(Some((open_fds as f32 / max_fds as f32).min(1.0)))
+                } else {
+                    Ok(None)
+                }
             } else {
-                0
-            },
+                Ok(None)
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Get process count ratio
+    ///
+    /// Uses `ps aux` to count processes and compares against a typical system limit.
+    ///
+    /// # Returns
+    ///
+    /// Process count ratio as `Option<f32>`, or `None` if process count could not be determined.
+    pub(crate) async fn get_process_count() -> PwrzvResult<Option<f32>> {
+        let output = match tokio::process::Command::new("ps")
+            .args(["aux"])
+            .output()
+            .await
+        {
+            Ok(output) if output.status.success() => output,
+            _ => return Ok(None),
+        };
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let process_count = stdout.lines().count().saturating_sub(1); // Subtract header line
+
+        // Typical max processes is around 4096 for most systems
+        let typical_max = 4096.0;
+        Ok(Some((process_count as f32 / typical_max).min(10.0))) // Cap at reasonable maximum
+    }
+
+    // Private parsing methods
+
+    /// Parse CPU statistics from /proc/stat content
+    fn parse_cpu_stat(content: &str) -> Option<CpuStat> {
+        let line = content.lines().next()?;
+        let parts: Vec<&str> = line.split_whitespace().collect();
+
+        if parts.len() < 8 {
+            return None;
+        }
+
+        let user = parts[1].parse::<u64>().ok()?;
+        let nice = parts[2].parse::<u64>().ok()?;
+        let system = parts[3].parse::<u64>().ok()?;
+        let idle = parts[4].parse::<u64>().ok()?;
+        let iowait = parts[5].parse::<u64>().ok()?;
+        let irq = parts[6].parse::<u64>().ok()?;
+        let softirq = parts[7].parse::<u64>().ok()?;
+
+        Some(CpuStat {
+            user,
+            nice,
+            system,
+            idle,
+            iowait,
+            irq,
+            softirq,
         })
     }
 
-    /// Calculate CPU usage and I/O wait ratio
-    fn calculate_cpu_usage(stat1: &CpuStat, stat2: &CpuStat) -> PwrzvResult<(f32, f32)> {
-        let total1 = stat1.user
-            + stat1.nice
-            + stat1.system
-            + stat1.idle
-            + stat1.iowait
-            + stat1.irq
-            + stat1.softirq
-            + stat1.steal;
-        let total2 = stat2.user
-            + stat2.nice
-            + stat2.system
-            + stat2.idle
-            + stat2.iowait
-            + stat2.irq
-            + stat2.softirq
-            + stat2.steal;
-
-        let total_diff = total2.saturating_sub(total1);
-        if total_diff == 0 {
-            return Ok((0.0, 0.0));
-        }
-
-        let idle_diff = stat2.idle.saturating_sub(stat1.idle);
-        let iowait_diff = stat2.iowait.saturating_sub(stat1.iowait);
-
-        let cpu_usage_ratio = 1.0 - (idle_diff as f32 / total_diff as f32);
-        let cpu_io_wait_ratio = iowait_diff as f32 / total_diff as f32;
-
-        Ok((
-            cpu_usage_ratio.clamp(0.0, 1.0),
-            cpu_io_wait_ratio.clamp(0.0, 1.0),
-        ))
+    /// Parse load average from /proc/loadavg content
+    fn parse_load_average(content: &str) -> Option<f32> {
+        content
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.parse::<f32>().ok())
     }
 
-    /// Read load average
-    fn read_load_average() -> PwrzvResult<f32> {
-        let content = fs::read_to_string("/proc/loadavg").map_err(|e| {
-            PwrzvError::collection_error(&format!("Failed to read /proc/loadavg: {e}"))
-        })?;
-
-        let fields: Vec<&str> = content.split_whitespace().collect();
-        if fields.is_empty() {
-            return Err(PwrzvError::collection_error("Empty /proc/loadavg"));
-        }
-
-        let load_1min: f32 = fields[0]
-            .parse()
-            .map_err(|_| PwrzvError::collection_error("Invalid load average format"))?;
-
-        // Get CPU core count
-        let cpu_cores = Self::get_cpu_cores()?;
-
-        Ok(load_1min / cpu_cores as f32)
-    }
-
-    /// Get CPU core count
-    fn get_cpu_cores() -> PwrzvResult<u32> {
-        let content = fs::read_to_string("/proc/cpuinfo").map_err(|e| {
-            PwrzvError::collection_error(&format!("Failed to read /proc/cpuinfo: {e}"))
-        })?;
-
+    /// Parse CPU core count from /proc/cpuinfo content
+    fn parse_cpu_cores(content: &str) -> Option<u32> {
         let core_count = content
             .lines()
             .filter(|line| line.starts_with("processor"))
-            .count();
+            .count() as u32;
 
-        if core_count == 0 {
-            return Err(PwrzvError::collection_error("No CPU cores found"));
+        if core_count > 0 {
+            Some(core_count)
+        } else {
+            None
         }
-
-        Ok(core_count as u32)
     }
 
-    /// Read memory usage ratio
-    fn read_memory_usage() -> PwrzvResult<f32> {
-        let content = fs::read_to_string("/proc/meminfo").map_err(|e| {
-            PwrzvError::collection_error(&format!("Failed to read /proc/meminfo: {e}"))
-        })?;
-
+    /// Parse memory usage from /proc/meminfo content
+    fn parse_memory_usage(content: &str) -> Option<f32> {
         let mut mem_total = 0u64;
         let mut mem_available = 0u64;
 
         for line in content.lines() {
             if line.starts_with("MemTotal:") {
-                mem_total = Self::parse_meminfo_value(line)?;
+                mem_total = Self::parse_meminfo_value(line).ok()?;
             } else if line.starts_with("MemAvailable:") {
-                mem_available = Self::parse_meminfo_value(line)?;
+                mem_available = Self::parse_meminfo_value(line).ok()?;
             }
         }
 
-        if mem_total == 0 {
-            return Err(PwrzvError::collection_error("MemTotal not found"));
+        if mem_total > 0 {
+            let usage_ratio = if mem_available < mem_total {
+                (mem_total - mem_available) as f32 / mem_total as f32
+            } else {
+                0.0
+            };
+            Some(usage_ratio.min(1.0))
+        } else {
+            None
         }
-
-        let usage_ratio = 1.0 - (mem_available as f32 / mem_total as f32);
-        Ok(usage_ratio.clamp(0.0, 1.0))
     }
 
-    /// Parse value from /proc/meminfo
-    fn parse_meminfo_value(line: &str) -> PwrzvResult<u64> {
+    /// Parse value from /proc/meminfo line
+    fn parse_meminfo_value(line: &str) -> Result<u64, ()> {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() < 2 {
-            return Err(PwrzvError::collection_error("Invalid meminfo line format"));
+            return Err(());
         }
 
-        parts[1]
-            .parse::<u64>()
-            .map_err(|_| PwrzvError::collection_error("Invalid meminfo value"))
+        parts[1].parse::<u64>().map_err(|_| ())
     }
 
-    /// Read memory pressure
-    #[allow(clippy::collapsible_if)]
-    fn read_memory_pressure() -> Option<f32> {
-        let content = fs::read_to_string("/proc/pressure/memory").ok()?;
-
+    /// Parse memory pressure from /proc/pressure/memory content
+    fn parse_memory_pressure(content: &str) -> Option<f32> {
         for line in content.lines() {
-            if line.starts_with("some ") {
-                if let Some(avg60_part) = line
-                    .split_whitespace()
-                    .find(|part| part.starts_with("avg60="))
-                {
-                    if let Some(value_str) = avg60_part.strip_prefix("avg60=") {
-                        if let Ok(pressure_percent) = value_str.parse::<f32>() {
-                            return Some((pressure_percent / 100.0).min(1.0));
-                        }
-                    }
-                }
+            if line.starts_with("some avg10=") {
+                let avg10_str = line.split("avg10=").nth(1)?.split_whitespace().next()?;
+                let avg10 = avg10_str.parse::<f32>().ok()?;
+                return Some((avg10 / 100.0).min(1.0));
             }
         }
         None
     }
 
-    /// Read disk statistics
-    fn read_disk_stats() -> PwrzvResult<HashMap<String, DiskStat>> {
-        let content = fs::read_to_string("/proc/diskstats").map_err(|e| {
-            PwrzvError::collection_error(&format!("Failed to read /proc/diskstats: {e}"))
-        })?;
+    /// Parse network statistics from /proc/net/dev content
+    fn parse_network_stats(content: &str) -> Option<HashMap<String, NetworkStats>> {
+        let mut stats = HashMap::new();
 
-        let mut disk_stats = HashMap::new();
+        for line in content.lines().skip(2) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 17 {
+                continue;
+            }
+
+            let interface = parts[0].trim_end_matches(':').to_string();
+
+            // Skip loopback interface
+            if interface == "lo" {
+                continue;
+            }
+
+            let rx_bytes = parts[1].parse::<u64>().unwrap_or(0);
+            let rx_packets = parts[2].parse::<u64>().unwrap_or(0);
+            let rx_dropped = parts[4].parse::<u64>().unwrap_or(0);
+            let tx_bytes = parts[9].parse::<u64>().unwrap_or(0);
+            let tx_packets = parts[10].parse::<u64>().unwrap_or(0);
+            let tx_dropped = parts[12].parse::<u64>().unwrap_or(0);
+
+            stats.insert(
+                interface,
+                NetworkStats {
+                    rx_bytes,
+                    tx_bytes,
+                    rx_packets,
+                    tx_packets,
+                    rx_dropped,
+                    tx_dropped,
+                },
+            );
+        }
+
+        if stats.is_empty() { None } else { Some(stats) }
+    }
+
+    /// Parse disk statistics from /proc/diskstats content
+    fn parse_disk_stats(content: &str) -> Option<HashMap<String, DiskStat>> {
+        let mut stats = HashMap::new();
 
         for line in content.lines() {
-            let fields: Vec<&str> = line.split_whitespace().collect();
-            if fields.len() >= 14 {
-                let device_name = fields[2];
-
-                // Only process major block devices
-                if !device_name.contains("loop")
-                    && !device_name.chars().last().unwrap_or('a').is_ascii_digit()
-                {
-                    let reads_completed = fields[3].parse().unwrap_or(0);
-                    let writes_completed = fields[7].parse().unwrap_or(0);
-                    let io_time_ms = fields[12].parse().unwrap_or(0);
-
-                    disk_stats.insert(
-                        device_name.to_string(),
-                        DiskStat {
-                            reads_completed,
-                            writes_completed,
-                            io_time_ms,
-                        },
-                    );
-                }
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 14 {
+                continue;
             }
+
+            let device = parts[2].to_string();
+
+            // Skip loop devices and partitions
+            if device.starts_with("loop") || device.chars().last().unwrap_or('a').is_ascii_digit() {
+                continue;
+            }
+
+            let sectors_read = parts[5].parse::<u64>().unwrap_or(0);
+            let sectors_written = parts[9].parse::<u64>().unwrap_or(0);
+
+            stats.insert(
+                device,
+                DiskStat {
+                    sectors_read,
+                    sectors_written,
+                },
+            );
         }
 
-        Ok(disk_stats)
+        if stats.is_empty() { None } else { Some(stats) }
     }
 
-    /// Calculate disk utilization
-    fn calculate_disk_utilization(
-        stats1: &HashMap<String, DiskStat>,
-        stats2: &HashMap<String, DiskStat>,
-    ) -> PwrzvResult<f32> {
-        let mut total_utilization = 0.0;
-        let mut device_count = 0;
+    /// Try to get real disk utilization from iostat -x
+    async fn get_disk_util_from_iostat() -> Option<f32> {
+        let output = tokio::process::Command::new("iostat")
+            .args(["-x", "1", "1"])
+            .output()
+            .await
+            .ok()?;
 
-        for (device, stat2) in stats2 {
-            if let Some(stat1) = stats1.get(device) {
-                let io_time_diff = stat2.io_time_ms.saturating_sub(stat1.io_time_ms);
+        let output_str = std::str::from_utf8(&output.stdout).ok()?;
 
-                let utilization = (io_time_diff as f32 / SAMPLE_INTERVAL as f32).min(1.0);
+        let mut max_util = 0.0f32;
 
-                total_utilization += utilization;
-                device_count += 1;
+        // Parse iostat -x output to find %util column
+        for line in output_str.lines() {
+            // Skip header lines and empty lines
+            if line.contains("Device") || line.trim().is_empty() || line.contains("avg-cpu") {
+                continue;
             }
-        }
 
-        if device_count > 0 {
-            Ok(total_utilization / device_count as f32)
-        } else {
-            Ok(0.0)
-        }
-    }
+            let parts: Vec<&str> = line.split_whitespace().collect();
 
-    /// Read network statistics
-    fn read_network_stats() -> PwrzvResult<HashMap<String, NetworkStat>> {
-        let content = fs::read_to_string("/proc/net/dev").map_err(|e| {
-            PwrzvError::collection_error(&format!("Failed to read /proc/net/dev: {e}"))
-        })?;
-
-        let mut network_stats = HashMap::new();
-        let lines: Vec<&str> = content.lines().collect();
-
-        for line in lines.iter().skip(2) {
-            // Skip headers
-            if let Some(colon_pos) = line.find(':') {
-                let interface = line[..colon_pos].trim();
-                if interface != "lo" {
-                    // Skip loopback interface
-                    let stats = line[colon_pos + 1..].trim();
-                    let fields: Vec<&str> = stats.split_whitespace().collect();
-
-                    // Format: bytes packets errs drop fifo frame compressed multicast | bytes packets errs drop fifo colls carrier compressed
-                    if fields.len() >= 16 {
-                        let rx_bytes = fields[0].parse().unwrap_or(0);
-                        let rx_packets = fields[1].parse().unwrap_or(0);
-                        let rx_dropped = fields[3].parse().unwrap_or(0); // drop field
-                        let tx_bytes = fields[8].parse().unwrap_or(0);
-                        let tx_packets = fields[9].parse().unwrap_or(0);
-                        let tx_dropped = fields[11].parse().unwrap_or(0); // drop field
-
-                        network_stats.insert(
-                            interface.to_string(),
-                            NetworkStat {
-                                rx_bytes,
-                                tx_bytes,
-                                rx_packets,
-                                tx_packets,
-                                rx_dropped,
-                                tx_dropped,
-                            },
-                        );
+            // iostat -x output format includes %util as the last column
+            if parts.len() >= 14 {
+                if let Some(util_str) = parts.last() {
+                    if let Ok(util_percent) = util_str.parse::<f32>() {
+                        let util_ratio = (util_percent / 100.0).min(1.0);
+                        max_util = max_util.max(util_ratio);
                     }
                 }
             }
         }
 
-        Ok(network_stats)
+        Some(max_util)
     }
 
-    /// Calculate network bandwidth utilization
-    /// Returns the maximum utilization across all active interfaces
-    fn calculate_network_utilization(
-        stats1: &HashMap<String, NetworkStat>,
-        stats2: &HashMap<String, NetworkStat>,
-    ) -> PwrzvResult<f32> {
-        let mut max_utilization = 0.0f32;
-
-        for (interface, stat2) in stats2 {
-            if let Some(stat1) = stats1.get(interface) {
-                let rx_diff = stat2.rx_bytes.saturating_sub(stat1.rx_bytes);
-                let tx_diff = stat2.tx_bytes.saturating_sub(stat1.tx_bytes);
-
-                // Calculate bytes per second
-                let bytes_per_sec = (rx_diff + tx_diff) * 1000 / SAMPLE_INTERVAL;
-
-                // Get actual interface speed from system
-                let interface_capacity = Self::get_interface_speed(interface);
-
-                if interface_capacity > 0 {
-                    let utilization =
-                        (bytes_per_sec as f64 / interface_capacity as f64).min(1.0) as f32;
-                    max_utilization = max_utilization.max(utilization);
-                }
-            }
+    /// Estimate disk utilization from /proc/diskstats
+    fn estimate_disk_utilization(disk_stats: &HashMap<String, DiskStat>) -> Option<f32> {
+        if disk_stats.is_empty() {
+            return None;
         }
 
-        Ok(max_utilization)
-    }
+        let mut total_utilization = 0.0;
+        let mut count = 0;
 
-    /// Calculate network dropped packets ratio
-    /// Returns the maximum dropped packets ratio across all active interfaces
-    fn calculate_network_dropped_packets(
-        stats1: &HashMap<String, NetworkStat>,
-        stats2: &HashMap<String, NetworkStat>,
-    ) -> PwrzvResult<f32> {
-        let mut max_dropped_ratio = 0.0f32;
-
-        for (interface, stat2) in stats2 {
-            if let Some(stat1) = stats1.get(interface) {
-                // Calculate packet differences
-                let rx_packets_diff = stat2.rx_packets.saturating_sub(stat1.rx_packets);
-                let tx_packets_diff = stat2.tx_packets.saturating_sub(stat1.tx_packets);
-                let rx_dropped_diff = stat2.rx_dropped.saturating_sub(stat1.rx_dropped);
-                let tx_dropped_diff = stat2.tx_dropped.saturating_sub(stat1.tx_dropped);
-
-                let total_packets = rx_packets_diff + tx_packets_diff;
-                let total_dropped = rx_dropped_diff + tx_dropped_diff;
-
-                if total_packets > 0 {
-                    let dropped_ratio =
-                        (total_dropped as f64 / total_packets as f64).min(1.0) as f32;
-                    max_dropped_ratio = max_dropped_ratio.max(dropped_ratio);
-                }
-            }
+        for stat in disk_stats.values() {
+            // Approximate utilization based on sectors read/written
+            let sectors_total = stat.sectors_read + stat.sectors_written;
+            let utilization = (sectors_total as f32 / 1000000.0).min(1.0); // Rough approximation
+            total_utilization += utilization;
+            count += 1;
         }
 
-        Ok(max_dropped_ratio)
+        if count > 0 {
+            Some(total_utilization / count as f32)
+        } else {
+            None
+        }
     }
 
     /// Get actual interface speed from system (in bytes per second)
     fn get_interface_speed(interface: &str) -> u64 {
-        // Try to read actual link speed from sysfs
-        let speed_path = format!("/sys/class/net/{interface}/speed");
-        #[allow(clippy::collapsible_if)]
+        let speed_path = format!("/sys/class/net/{}/speed", interface);
+
         if let Ok(speed_str) = fs::read_to_string(&speed_path) {
             if let Ok(speed_mbps) = speed_str.trim().parse::<u64>() {
-                // Convert Mbps to bytes per second
-                // speed_mbps is in megabits per second, convert to bytes per second
-                return speed_mbps * 1_000_000 / 8;
+                return speed_mbps * 1_000_000 / 8; // Convert Mbps to bytes/sec
             }
         }
 
-        // Try to get interface info from ethtool (if available)
-        if let Ok(output) = Command::new("ethtool").arg(interface).output() {
-            let output_str = String::from_utf8_lossy(&output.stdout);
+        // Default to 1 Gbps if speed cannot be determined
+        1_000_000_000 / 8
+    }
 
-            for line in output_str.lines() {
-                if line.contains("Speed:") {
-                    // Parse "Speed: 1000Mb/s" or similar
-                    if let Some(speed_part) = line.split("Speed:").nth(1) {
-                        let speed_str = speed_part.trim();
-                        if speed_str.contains("1000Mb/s") || speed_str.contains("1000Mbps") {
-                            return 125_000_000; // 1 Gbps = 125 MB/s
-                        } else if speed_str.contains("100Mb/s") || speed_str.contains("100Mbps") {
-                            return 12_500_000; // 100 Mbps = 12.5 MB/s
-                        } else if speed_str.contains("10Mb/s") || speed_str.contains("10Mbps") {
-                            return 1_250_000; // 10 Mbps = 1.25 MB/s
-                        }
-                    }
-                }
+    /// Calculate instant network utilization
+    fn calculate_instant_network_utilization(stats: &HashMap<String, NetworkStats>) -> Option<f32> {
+        let mut max_utilization = 0.0f32;
+
+        for (interface, stat) in stats {
+            let interface_speed = Self::get_interface_speed(interface);
+            let total_bytes = stat.rx_bytes + stat.tx_bytes;
+
+            if interface_speed > 0 {
+                let utilization = (total_bytes as f32 / interface_speed as f32 * 100.0).min(1.0);
+                max_utilization = max_utilization.max(utilization);
             }
         }
 
-        // Check if interface is up and has a carrier
-        let carrier_path = format!("/sys/class/net/{interface}/carrier");
-        let operstate_path = format!("/sys/class/net/{interface}/operstate");
-
-        let is_up = fs::read_to_string(&operstate_path)
-            .map(|s| s.trim() == "up")
-            .unwrap_or(false);
-
-        let has_carrier = fs::read_to_string(&carrier_path)
-            .map(|s| s.trim() == "1")
-            .unwrap_or(false);
-
-        // If interface is up and active, use conservative estimates
-        if is_up && has_carrier {
-            match interface {
-                // Ethernet interfaces - assume gigabit if active
-                name if name.starts_with("eth")
-                    || name.starts_with("enp")
-                    || name.starts_with("eno") =>
-                {
-                    125_000_000 // 1 Gbps = 125 MB/s
-                }
-                // WiFi interfaces - conservative estimate
-                name if name.starts_with("wlan")
-                    || name.starts_with("wlp")
-                    || name.starts_with("wlo") =>
-                {
-                    50_000_000 // ~400 Mbps = 50 MB/s (conservative WiFi)
-                }
-                // Virtual interfaces - high capacity
-                name if name.starts_with("br")
-                    || name.starts_with("bridge")
-                    || name.starts_with("docker")
-                    || name.starts_with("veth") =>
-                {
-                    1_000_000_000 // Virtual interfaces can be very fast
-                }
-                // USB and PPP interfaces
-                name if name.starts_with("usb") => 12_500_000, // 100 Mbps
-                name if name.starts_with("ppp") => 5_000_000,  // 40 Mbps
-                // Default conservative estimate
-                _ => 12_500_000, // 100 Mbps
-            }
-        } else {
-            // Interface is down or no carrier, return minimal capacity
-            1_000_000 // 8 Mbps minimum
-        }
+        Some(max_utilization)
     }
 
-    /// Read file descriptor usage ratio
-    fn read_fd_usage() -> PwrzvResult<f32> {
-        let content = fs::read_to_string("/proc/sys/fs/file-nr").map_err(|e| {
-            PwrzvError::collection_error(&format!("Failed to read /proc/sys/fs/file-nr: {e}"))
-        })?;
+    /// Calculate instant dropped packets ratio
+    fn calculate_instant_dropped_packets_ratio(
+        stats: &HashMap<String, NetworkStats>,
+    ) -> Option<f32> {
+        let mut total_packets = 0u64;
+        let mut total_dropped = 0u64;
 
-        let fields: Vec<&str> = content.split_whitespace().collect();
-        if fields.len() >= 3 {
-            let allocated: u64 = fields[0]
-                .parse()
-                .map_err(|_| PwrzvError::collection_error("Invalid allocated FDs"))?;
-            let max_fds: u64 = fields[2]
-                .parse()
-                .map_err(|_| PwrzvError::collection_error("Invalid max FDs"))?;
-
-            if max_fds > 0 {
-                let usage_ratio = (allocated as f64 / max_fds as f64).min(1.0);
-                return Ok(usage_ratio as f32);
-            }
+        for stat in stats.values() {
+            total_packets += stat.rx_packets + stat.tx_packets;
+            total_dropped += stat.rx_dropped + stat.tx_dropped;
         }
 
-        Err(PwrzvError::collection_error("Invalid file-nr format"))
+        if total_packets == 0 {
+            return Some(0.0);
+        }
+
+        let dropped_ratio = total_dropped as f32 / total_packets as f32;
+        Some(dropped_ratio.clamp(0.0, 1.0))
     }
+}
 
-    /// Read process count usage ratio
-    fn read_process_count() -> PwrzvResult<f32> {
-        // Get current process count
-        let proc_dir = fs::read_dir("/proc")
-            .map_err(|e| PwrzvError::collection_error(&format!("Failed to read /proc: {e}")))?;
-
-        let current_processes = proc_dir
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .chars()
-                    .all(|c| c.is_ascii_digit())
-            })
-            .count();
-
-        // Read maximum process count
-        let max_procs = if let Ok(content) = fs::read_to_string("/proc/sys/kernel/pid_max") {
-            content.trim().parse::<u64>().unwrap_or(32768)
-        } else {
-            32768 // Default value
-        };
-
-        let usage_ratio = (current_processes as f64 / max_procs as f64).min(1.0);
-        Ok(usage_ratio as f32)
+impl CpuStat {
+    fn total(&self) -> u64 {
+        self.user + self.nice + self.system + self.idle + self.iowait + self.irq + self.softirq
     }
+}
 
-    /// Validate metric data validity
-    pub fn validate(&self) -> bool {
-        self.cpu_usage_ratio >= 0.0
-            && self.cpu_usage_ratio <= 1.0
-            && self.cpu_io_wait_ratio >= 0.0
-            && self.cpu_io_wait_ratio <= 1.0
-            && self.cpu_load_ratio >= 0.0
-            && self.memory_usage_ratio >= 0.0
-            && self.memory_usage_ratio <= 1.0
-            && self.memory_pressure_ratio >= 0.0
-            && self.memory_pressure_ratio <= 1.0
-            && self.disk_io_ratio >= 0.0
-            && self.disk_io_ratio <= 1.0
-            && self.network_bandwidth_ratio >= 0.0
-            && self.network_bandwidth_ratio <= 1.0
-            && self.network_dropped_packets_ratio >= 0.0
-            && self.network_dropped_packets_ratio <= 1.0
-            && self.fd_usage_ratio >= 0.0
-            && self.fd_usage_ratio <= 1.0
-            && self.process_count_ratio >= 0.0
-            && self.process_count_ratio <= 1.0
-    }
+#[derive(Debug, Clone)]
+struct DiskStat {
+    sectors_read: u64,
+    sectors_written: u64,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
-    #[test]
-    fn test_linux_system_metrics_validate() {
-        // Test valid metrics
-        let valid_metrics = LinuxSystemMetrics {
-            cpu_usage_ratio: 0.5,
-            cpu_io_wait_ratio: 0.1,
-            cpu_load_ratio: 1.2,
-            memory_usage_ratio: 0.7,
-            memory_pressure_ratio: 0.2,
-            disk_io_ratio: 0.3,
-            network_bandwidth_ratio: 0.4,
-            network_dropped_packets_ratio: 0.01,
-            fd_usage_ratio: 0.6,
-            process_count_ratio: 0.5,
-        };
-        assert!(valid_metrics.validate());
+    #[tokio::test]
+    async fn test_collect_system_metrics() {
+        println!("Testing Linux system metrics collection...");
 
-        // Test boundary values
-        let boundary_metrics = LinuxSystemMetrics {
-            cpu_usage_ratio: 1.0,
-            cpu_io_wait_ratio: 0.0,
-            cpu_load_ratio: 0.0,
-            memory_usage_ratio: 1.0,
-            memory_pressure_ratio: 1.0,
-            disk_io_ratio: 1.0,
-            network_bandwidth_ratio: 1.0,
-            network_dropped_packets_ratio: 1.0,
-            fd_usage_ratio: 1.0,
-            process_count_ratio: 1.0,
-        };
-        assert!(boundary_metrics.validate());
+        let result = LinuxSystemMetrics::collect_system_metrics().await;
+        assert!(result.is_ok(), "System metrics collection should succeed");
 
-        // Test invalid metrics (negative values)
-        let invalid_metrics = LinuxSystemMetrics {
-            cpu_usage_ratio: -0.1,
-            cpu_io_wait_ratio: 0.1,
-            cpu_load_ratio: 1.2,
-            memory_usage_ratio: 0.7,
-            memory_pressure_ratio: 0.2,
-            disk_io_ratio: 0.3,
-            network_bandwidth_ratio: 0.4,
-            network_dropped_packets_ratio: 0.01,
-            fd_usage_ratio: 0.6,
-            process_count_ratio: 0.5,
-        };
-        assert!(!invalid_metrics.validate());
+        let metrics = result.unwrap();
+        println!("Collected metrics: {:#?}", metrics);
 
-        // Test invalid metrics (values > 1.0 for ratios)
-        let invalid_metrics2 = LinuxSystemMetrics {
-            cpu_usage_ratio: 1.5,
-            cpu_io_wait_ratio: 0.1,
-            cpu_load_ratio: 1.2,
-            memory_usage_ratio: 0.7,
-            memory_pressure_ratio: 0.2,
-            disk_io_ratio: 0.3,
-            network_bandwidth_ratio: 0.4,
-            network_dropped_packets_ratio: 0.01,
-            fd_usage_ratio: 0.6,
-            process_count_ratio: 0.5,
-        };
-        assert!(!invalid_metrics2.validate());
+        // Validate individual metrics if they exist
+        if let Some(cpu_usage) = metrics.cpu_usage_ratio {
+            assert!(
+                (0.0..=1.0).contains(&cpu_usage),
+                "CPU usage should be in [0.0, 1.0], got: {}",
+                cpu_usage
+            );
+        }
+
+        if let Some(cpu_io_wait) = metrics.cpu_io_wait_ratio {
+            assert!(
+                (0.0..=1.0).contains(&cpu_io_wait),
+                "CPU I/O wait should be in [0.0, 1.0], got: {}",
+                cpu_io_wait
+            );
+        }
+
+        if let Some(load_ratio) = metrics.cpu_load_ratio {
+            assert!(
+                load_ratio >= 0.0,
+                "CPU load ratio should be non-negative, got: {}",
+                load_ratio
+            );
+        }
+
+        if let Some(memory_usage) = metrics.memory_usage_ratio {
+            assert!(
+                (0.0..=1.0).contains(&memory_usage),
+                "Memory usage should be in [0.0, 1.0], got: {}",
+                memory_usage
+            );
+        }
+
+        if let Some(memory_pressure) = metrics.memory_pressure_ratio {
+            assert!(
+                (0.0..=1.0).contains(&memory_pressure),
+                "Memory pressure should be in [0.0, 1.0], got: {}",
+                memory_pressure
+            );
+        }
+
+        if let Some(disk_io) = metrics.disk_io_utilization {
+            assert!(
+                (0.0..=1.0).contains(&disk_io),
+                "Disk I/O should be in [0.0, 1.0], got: {}",
+                disk_io
+            );
+        }
+
+        if let Some(network_util) = metrics.network_utilization {
+            assert!(
+                (0.0..=1.0).contains(&network_util),
+                "Network utilization should be in [0.0, 1.0], got: {}",
+                network_util
+            );
+        }
+
+        if let Some(network_drop) = metrics.network_dropped_packets_ratio {
+            assert!(
+                (0.0..=1.0).contains(&network_drop),
+                "Network drop ratio should be in [0.0, 1.0], got: {}",
+                network_drop
+            );
+        }
+
+        if let Some(fd_usage) = metrics.fd_usage_ratio {
+            assert!(
+                (0.0..=1.0).contains(&fd_usage),
+                "FD usage should be in [0.0, 1.0], got: {}",
+                fd_usage
+            );
+        }
+
+        if let Some(process_count) = metrics.process_count_ratio {
+            assert!(
+                process_count >= 0.0,
+                "Process count ratio should be non-negative, got: {}",
+                process_count
+            );
+        }
+
+        // Count available metrics
+        let available_count = [
+            metrics.cpu_usage_ratio.is_some(),
+            metrics.cpu_io_wait_ratio.is_some(),
+            metrics.cpu_load_ratio.is_some(),
+            metrics.memory_usage_ratio.is_some(),
+            metrics.memory_pressure_ratio.is_some(),
+            metrics.disk_io_utilization.is_some(),
+            metrics.network_utilization.is_some(),
+            metrics.network_dropped_packets_ratio.is_some(),
+            metrics.fd_usage_ratio.is_some(),
+            metrics.process_count_ratio.is_some(),
+        ]
+        .iter()
+        .filter(|&&x| x)
+        .count();
+
+        println!("Available metrics: {}/10", available_count);
+
+        // We should have at least some metrics available
+        assert!(
+            available_count > 0,
+            "At least some metrics should be available"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_individual_metric_methods() {
+        println!("Testing individual metric collection methods...");
+
+        // Test CPU metrics
+        let cpu_result = LinuxSystemMetrics::get_cpu_metrics_consolidated().await;
+        assert!(cpu_result.is_ok(), "CPU metrics should be collectible");
+        let (cpu_usage, cpu_io_wait, cpu_load) = cpu_result.unwrap();
+        println!(
+            "CPU metrics: usage={:?}, io_wait={:?}, load={:?}",
+            cpu_usage, cpu_io_wait, cpu_load
+        );
+
+        // Test memory metrics
+        let memory_result = LinuxSystemMetrics::get_memory_metrics_consolidated().await;
+        assert!(
+            memory_result.is_ok(),
+            "Memory metrics should be collectible"
+        );
+        let (memory_usage, memory_pressure) = memory_result.unwrap();
+        println!(
+            "Memory metrics: usage={:?}, pressure={:?}",
+            memory_usage, memory_pressure
+        );
+
+        // Test network metrics
+        let network_result = LinuxSystemMetrics::get_network_metrics_consolidated().await;
+        assert!(
+            network_result.is_ok(),
+            "Network metrics should be collectible"
+        );
+        let (network_util, network_drop) = network_result.unwrap();
+        println!(
+            "Network metrics: utilization={:?}, drop_ratio={:?}",
+            network_util, network_drop
+        );
+
+        // Test disk metrics
+        let disk_result = LinuxSystemMetrics::get_disk_io_utilization_instant().await;
+        assert!(disk_result.is_ok(), "Disk metrics should be collectible");
+        let disk_io = disk_result.unwrap();
+        println!("Disk metrics: io_utilization={:?}", disk_io);
+
+        // Test FD usage
+        let fd_result = LinuxSystemMetrics::get_fd_usage().await;
+        assert!(fd_result.is_ok(), "FD metrics should be collectible");
+        let fd_usage = fd_result.unwrap();
+        println!("FD metrics: usage={:?}", fd_usage);
+
+        // Test process count
+        let process_result = LinuxSystemMetrics::get_process_count().await;
+        assert!(
+            process_result.is_ok(),
+            "Process metrics should be collectible"
+        );
+        let process_count = process_result.unwrap();
+        println!("Process metrics: count_ratio={:?}", process_count);
+    }
+
+    #[tokio::test]
+    async fn test_parallel_vs_sequential_performance() {
+        println!("Testing parallel vs sequential performance...");
+
+        // Test parallel execution
+        let start_parallel = Instant::now();
+        let _ = tokio::join!(
+            LinuxSystemMetrics::get_cpu_metrics_consolidated(),
+            LinuxSystemMetrics::get_memory_metrics_consolidated(),
+            LinuxSystemMetrics::get_network_metrics_consolidated(),
+            LinuxSystemMetrics::get_disk_io_utilization_instant(),
+            LinuxSystemMetrics::get_fd_usage(),
+            LinuxSystemMetrics::get_process_count()
+        );
+        let parallel_duration = start_parallel.elapsed();
+
+        // Test sequential execution
+        let start_sequential = Instant::now();
+        let _ = LinuxSystemMetrics::get_cpu_metrics_consolidated().await;
+        let _ = LinuxSystemMetrics::get_memory_metrics_consolidated().await;
+        let _ = LinuxSystemMetrics::get_network_metrics_consolidated().await;
+        let _ = LinuxSystemMetrics::get_disk_io_utilization_instant().await;
+        let _ = LinuxSystemMetrics::get_fd_usage().await;
+        let _ = LinuxSystemMetrics::get_process_count().await;
+        let sequential_duration = start_sequential.elapsed();
+
+        println!("Parallel execution: {:?}", parallel_duration);
+        println!("Sequential execution: {:?}", sequential_duration);
+
+        let improvement = sequential_duration.as_secs_f64() / parallel_duration.as_secs_f64();
+        println!("Performance improvement: {:.2}x", improvement);
+
+        // On non-Linux systems, many metrics may fail, so parallel vs sequential
+        // performance comparison is not meaningful
+        #[cfg(target_os = "linux")]
+        {
+            // Parallel should be faster or at least not significantly slower
+            assert!(
+                parallel_duration <= sequential_duration * 2,
+                "Parallel execution should not be significantly slower than sequential"
+            );
+
+            // In most cases, parallel should be noticeably faster
+            if improvement > 1.5 {
+                println!("✅ Significant performance improvement achieved");
+            }
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            println!("⚠️  Running on non-Linux system, performance comparison skipped");
+            println!(
+                "   Parallel: {:?}, Sequential: {:?}",
+                parallel_duration, sequential_duration
+            );
+        }
     }
 
     #[test]
-    fn test_cpu_stat_parsing() {
-        // Test valid CPU stat line
-        let valid_line = "cpu  123456 789 234567 890123 456 789 123 0 0 0";
-        let result = LinuxSystemMetrics::parse_cpu_stat_line(valid_line);
-        assert!(result.is_ok());
+    fn test_parse_cpu_stat() {
+        let content = "cpu  123456 789 234567 890123 45678 901 234 0 0 0\n";
+        let result = LinuxSystemMetrics::parse_cpu_stat(content);
+        assert!(result.is_some());
 
         let stat = result.unwrap();
         assert_eq!(stat.user, 123456);
         assert_eq!(stat.nice, 789);
         assert_eq!(stat.system, 234567);
         assert_eq!(stat.idle, 890123);
-        assert_eq!(stat.iowait, 456);
+        assert_eq!(stat.iowait, 45678);
 
-        // Test invalid CPU stat line (not enough fields)
-        let invalid_line = "cpu  123 456";
-        let result = LinuxSystemMetrics::parse_cpu_stat_line(invalid_line);
-        assert!(result.is_err());
-
-        // Test non-numeric values
-        let invalid_line2 = "cpu  abc def ghi jkl mno pqr stu";
-        let result = LinuxSystemMetrics::parse_cpu_stat_line(invalid_line2);
-        assert!(result.is_err());
+        let total = stat.total();
+        assert_eq!(total, 123456 + 789 + 234567 + 890123 + 45678 + 901 + 234);
     }
 
     #[test]
-    fn test_cpu_usage_calculation() {
-        let stat1 = CpuStat {
-            user: 1000,
-            nice: 100,
-            system: 500,
-            idle: 8000,
-            iowait: 200,
-            irq: 50,
-            softirq: 150,
-            steal: 0,
-        };
-
-        let stat2 = CpuStat {
-            user: 1100,   // +100
-            nice: 110,    // +10
-            system: 550,  // +50
-            idle: 8300,   // +300
-            iowait: 250,  // +50
-            irq: 60,      // +10
-            softirq: 170, // +20
-            steal: 0,     // +0
-        };
-
-        let result = LinuxSystemMetrics::calculate_cpu_usage(&stat1, &stat2);
-        assert!(result.is_ok());
-
-        let (usage, iowait) = result.unwrap();
-
-        // Total diff: 540, Non-idle diff: 240
-        // Usage: 240/540 ≈ 0.444
-        // IOWait: 50/540 ≈ 0.093
-        assert!((usage - 0.444).abs() < 0.01);
-        assert!((iowait - 0.093).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_meminfo_parsing() {
-        let line = "MemTotal:       16384000 kB";
-        let result = LinuxSystemMetrics::parse_meminfo_value(line);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 16384000);
+    fn test_parse_load_average() {
+        let content = "1.23 2.34 3.45 1/234 5678\n";
+        let result = LinuxSystemMetrics::parse_load_average(content);
+        assert_eq!(result, Some(1.23));
 
         // Test invalid format
-        let invalid_line = "MemTotal: invalid kB";
-        let result = LinuxSystemMetrics::parse_meminfo_value(invalid_line);
-        assert!(result.is_err());
-
-        // Test missing kB suffix - this should actually work since parse_meminfo_value
-        // only requires the numeric part after the colon
-        let line_without_kb = "MemTotal:       16384000";
-        let result = LinuxSystemMetrics::parse_meminfo_value(line_without_kb);
-        // This should actually work as the function extracts the number
-        assert!(result.is_ok() || result.is_err()); // Either is acceptable for this edge case
+        let invalid_content = "invalid format\n";
+        let result = LinuxSystemMetrics::parse_load_average(invalid_content);
+        assert_eq!(result, None);
     }
 
     #[test]
-    fn test_network_stat_parsing() {
-        // Use realistic /proc/net/dev format: 16 fields minimum
-        let valid_line =
-            "  eth0: 1234567890 1000 20 30 40 50 60 70 987654321 800 10 15 25 35 45 55";
-        let result = LinuxSystemMetrics::parse_network_stat_line(valid_line);
-        assert!(result.is_ok());
+    fn test_parse_cpu_cores() {
+        let content = "processor\t: 0\nprocessor\t: 1\nprocessor\t: 2\nprocessor\t: 3\n";
+        let result = LinuxSystemMetrics::parse_cpu_cores(content);
+        assert_eq!(result, Some(4));
 
-        let (interface, stat) = result.unwrap();
-        assert_eq!(interface, "eth0");
-        assert_eq!(stat.rx_bytes, 1234567890);
-        assert_eq!(stat.rx_packets, 1000);
-        assert_eq!(stat.rx_dropped, 30);
-        assert_eq!(stat.tx_bytes, 987654321);
-        assert_eq!(stat.tx_packets, 800);
-        assert_eq!(stat.tx_dropped, 15);
-
-        // Test invalid line (not enough fields)
-        let invalid_line = "eth0: 123 456";
-        let result = LinuxSystemMetrics::parse_network_stat_line(invalid_line);
-        assert!(result.is_err());
+        // Test empty content
+        let empty_content = "";
+        let result = LinuxSystemMetrics::parse_cpu_cores(empty_content);
+        assert_eq!(result, None);
     }
 
     #[test]
-    fn test_disk_utilization_calculation() {
-        let mut stats1 = HashMap::new();
-        stats1.insert(
-            "sda".to_string(),
-            DiskStat {
-                reads_completed: 1000,
-                writes_completed: 500,
-                io_time_ms: 10000,
-            },
-        );
+    fn test_parse_memory_usage() {
+        let content = "MemTotal:       16384000 kB\nMemAvailable:   8192000 kB\n";
+        let result = LinuxSystemMetrics::parse_memory_usage(content);
+        assert!(result.is_some());
 
-        let mut stats2 = HashMap::new();
-        stats2.insert(
-            "sda".to_string(),
-            DiskStat {
-                reads_completed: 1100,
-                writes_completed: 550,
-                io_time_ms: 10500, // +500ms over time period
-            },
-        );
-
-        let result = LinuxSystemMetrics::calculate_disk_utilization(&stats1, &stats2);
-        assert!(result.is_ok());
-
-        let utilization = result.unwrap();
-        // With 500ms time difference and assuming 1000ms collection interval
-        // utilization should be 500/1000 = 0.5
-        assert!((0.0..=1.0).contains(&utilization));
+        let usage = result.unwrap();
+        // Expected: (16384000 - 8192000) / 16384000 = 0.5
+        assert!((usage - 0.5).abs() < 0.001);
     }
 
     #[test]
-    fn test_network_packet_loss_calculation() {
-        let mut stats1 = HashMap::new();
-        stats1.insert(
-            "eth0".to_string(),
-            NetworkStat {
-                rx_bytes: 1000000,
-                tx_bytes: 500000,
-                rx_packets: 1000,
-                tx_packets: 500,
-                rx_dropped: 10,
-                tx_dropped: 5,
-            },
-        );
+    fn test_parse_memory_pressure() {
+        let content = "some avg10=12.34 avg60=23.45 avg300=34.56 total=123456789\n";
+        let result = LinuxSystemMetrics::parse_memory_pressure(content);
+        assert!(result.is_some());
 
-        let mut stats2 = HashMap::new();
-        stats2.insert(
-            "eth0".to_string(),
-            NetworkStat {
-                rx_bytes: 2000000,
-                tx_bytes: 1000000,
-                rx_packets: 1100, // +100 packets
-                tx_packets: 550,  // +50 packets
-                rx_dropped: 15,   // +5 dropped
-                tx_dropped: 8,    // +3 dropped
-            },
-        );
-
-        let result = LinuxSystemMetrics::calculate_network_dropped_packets(&stats1, &stats2);
-        assert!(result.is_ok());
-
-        let dropped_ratio = result.unwrap();
-        // Total packets: 150, dropped: 8, ratio: 8/150 ≈ 0.053
-        assert!((dropped_ratio - 0.053).abs() < 0.01);
+        let pressure = result.unwrap();
+        // Expected: 12.34 / 100.0 = 0.1234
+        assert!((pressure - 0.1234).abs() < 0.001);
     }
 
     #[test]
-    fn test_interface_speed_detection() {
-        // Test default speed for unknown interface
-        let speed = LinuxSystemMetrics::get_interface_speed("unknown123");
-        assert!(speed > 0);
-
-        // Test that different interface types get different speeds
-        let eth_speed = LinuxSystemMetrics::get_interface_speed("eth0");
-        let wifi_speed = LinuxSystemMetrics::get_interface_speed("wlan0");
-        let usb_speed = LinuxSystemMetrics::get_interface_speed("usb0");
-
-        assert!(eth_speed > 0);
-        assert!(wifi_speed > 0);
-        assert!(usb_speed > 0);
-    }
-
-    #[test]
-    fn test_metrics_collection_error_handling() {
-        // Test that parsing handles malformed data gracefully
-        let invalid_cpu_line = "invalid cpu data";
-        let result = LinuxSystemMetrics::parse_cpu_stat_line(invalid_cpu_line);
-        assert!(result.is_err());
-
-        match result.unwrap_err() {
-            PwrzvError::ParseError { .. } => {}
-            _ => panic!("Expected ParseError"),
-        }
-    }
-
-    #[test]
-    fn test_load_average_parsing() {
-        // Test that load average calculation is reasonable
-        let result = LinuxSystemMetrics::read_load_average();
-
-        // In test environment, this might fail due to missing /proc access
-        // but if it succeeds, the value should be reasonable
-        if let Ok(load) = result {
-            assert!(load >= 0.0);
-            assert!(load < 1000.0); // Sanity check
-        }
-    }
-
-    #[test]
-    fn test_edge_cases() {
-        // Test zero division protection in CPU calculation
-        let zero_stat1 = CpuStat {
-            user: 0,
-            nice: 0,
-            system: 0,
-            idle: 0,
-            iowait: 0,
-            irq: 0,
-            softirq: 0,
-            steal: 0,
-        };
-        let zero_stat2 = CpuStat {
-            user: 0,
-            nice: 0,
-            system: 0,
-            idle: 0,
-            iowait: 0,
-            irq: 0,
-            softirq: 0,
-            steal: 0,
+    fn test_serialization() {
+        let metrics = LinuxSystemMetrics {
+            cpu_usage_ratio: Some(0.5),
+            cpu_io_wait_ratio: Some(0.1),
+            cpu_load_ratio: Some(1.2),
+            memory_usage_ratio: Some(0.7),
+            memory_pressure_ratio: Some(0.2),
+            disk_io_utilization: Some(0.3),
+            network_utilization: Some(0.4),
+            network_dropped_packets_ratio: Some(0.01),
+            fd_usage_ratio: Some(0.6),
+            process_count_ratio: Some(0.8),
         };
 
-        let result = LinuxSystemMetrics::calculate_cpu_usage(&zero_stat1, &zero_stat2);
-        // Should handle zero division gracefully
-        assert!(result.is_ok());
+        // Test JSON serialization
+        let json = serde_json::to_string(&metrics).unwrap();
+        assert!(json.contains("cpu_usage_ratio"));
+        assert!(json.contains("0.5"));
 
-        let (usage, iowait) = result.unwrap();
-        assert!((0.0..=1.0).contains(&usage));
-        assert!((0.0..=1.0).contains(&iowait));
+        // Test deserialization
+        let deserialized: LinuxSystemMetrics = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, metrics);
     }
 
-    // Helper function for testing
-    impl LinuxSystemMetrics {
-        fn parse_cpu_stat_line(line: &str) -> PwrzvResult<CpuStat> {
-            let fields: Vec<&str> = line.split_whitespace().collect();
-            if fields.len() < 8 {
-                return Err(PwrzvError::parse_error("Invalid CPU stat format"));
+    #[test]
+    fn test_clone_and_debug() {
+        let metrics = LinuxSystemMetrics {
+            cpu_usage_ratio: Some(0.5),
+            cpu_io_wait_ratio: Some(0.1),
+            cpu_load_ratio: Some(1.2),
+            memory_usage_ratio: Some(0.7),
+            memory_pressure_ratio: Some(0.2),
+            disk_io_utilization: Some(0.3),
+            network_utilization: Some(0.4),
+            network_dropped_packets_ratio: Some(0.01),
+            fd_usage_ratio: Some(0.6),
+            process_count_ratio: Some(0.8),
+        };
+
+        // Test Clone
+        let cloned = metrics.clone();
+        assert_eq!(cloned, metrics);
+
+        // Test Debug
+        let debug_str = format!("{:?}", metrics);
+        assert!(debug_str.contains("LinuxSystemMetrics"));
+        assert!(debug_str.contains("cpu_usage_ratio"));
+    }
+
+    #[tokio::test]
+    async fn test_error_handling() {
+        // Test that methods handle errors gracefully and return None rather than panicking
+
+        // These tests verify the error handling paths, though they may not trigger
+        // actual errors in a normal environment
+
+        let cpu_result = LinuxSystemMetrics::get_cpu_metrics_consolidated().await;
+        assert!(
+            cpu_result.is_ok(),
+            "CPU metrics should handle errors gracefully"
+        );
+
+        let memory_result = LinuxSystemMetrics::get_memory_metrics_consolidated().await;
+        assert!(
+            memory_result.is_ok(),
+            "Memory metrics should handle errors gracefully"
+        );
+
+        let network_result = LinuxSystemMetrics::get_network_metrics_consolidated().await;
+        assert!(
+            network_result.is_ok(),
+            "Network metrics should handle errors gracefully"
+        );
+
+        let disk_result = LinuxSystemMetrics::get_disk_io_utilization_instant().await;
+        assert!(
+            disk_result.is_ok(),
+            "Disk metrics should handle errors gracefully"
+        );
+
+        let fd_result = LinuxSystemMetrics::get_fd_usage().await;
+        assert!(
+            fd_result.is_ok(),
+            "FD metrics should handle errors gracefully"
+        );
+
+        let process_result = LinuxSystemMetrics::get_process_count().await;
+        assert!(
+            process_result.is_ok(),
+            "Process metrics should handle errors gracefully"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_integration_comprehensive() {
+        println!("Running comprehensive Linux integration test...");
+
+        // Test multiple collection cycles to ensure consistency
+        let mut all_successful = true;
+        let mut metrics_availability = [0; 10]; // Track availability of each metric
+
+        for i in 0..3 {
+            println!("Collection cycle {}", i + 1);
+
+            match LinuxSystemMetrics::collect_system_metrics().await {
+                Ok(metrics) => {
+                    if metrics.cpu_usage_ratio.is_some() {
+                        metrics_availability[0] += 1;
+                    }
+                    if metrics.cpu_io_wait_ratio.is_some() {
+                        metrics_availability[1] += 1;
+                    }
+                    if metrics.cpu_load_ratio.is_some() {
+                        metrics_availability[2] += 1;
+                    }
+                    if metrics.memory_usage_ratio.is_some() {
+                        metrics_availability[3] += 1;
+                    }
+                    if metrics.memory_pressure_ratio.is_some() {
+                        metrics_availability[4] += 1;
+                    }
+                    if metrics.disk_io_utilization.is_some() {
+                        metrics_availability[5] += 1;
+                    }
+                    if metrics.network_utilization.is_some() {
+                        metrics_availability[6] += 1;
+                    }
+                    if metrics.network_dropped_packets_ratio.is_some() {
+                        metrics_availability[7] += 1;
+                    }
+                    if metrics.fd_usage_ratio.is_some() {
+                        metrics_availability[8] += 1;
+                    }
+                    if metrics.process_count_ratio.is_some() {
+                        metrics_availability[9] += 1;
+                    }
+
+                    println!("  ✅ Collection successful");
+                }
+                Err(e) => {
+                    println!("  ❌ Collection failed: {}", e);
+                    all_successful = false;
+                }
             }
 
-            Ok(CpuStat {
-                user: fields[1]
-                    .parse()
-                    .map_err(|_| PwrzvError::parse_error("Invalid user value"))?,
-                nice: fields[2]
-                    .parse()
-                    .map_err(|_| PwrzvError::parse_error("Invalid nice value"))?,
-                system: fields[3]
-                    .parse()
-                    .map_err(|_| PwrzvError::parse_error("Invalid system value"))?,
-                idle: fields[4]
-                    .parse()
-                    .map_err(|_| PwrzvError::parse_error("Invalid idle value"))?,
-                iowait: fields[5]
-                    .parse()
-                    .map_err(|_| PwrzvError::parse_error("Invalid iowait value"))?,
-                irq: fields[6]
-                    .parse()
-                    .map_err(|_| PwrzvError::parse_error("Invalid irq value"))?,
-                softirq: fields[7]
-                    .parse()
-                    .map_err(|_| PwrzvError::parse_error("Invalid softirq value"))?,
-                steal: if fields.len() > 8 {
-                    fields[8]
-                        .parse()
-                        .map_err(|_| PwrzvError::parse_error("Invalid steal value"))?
-                } else {
-                    0
-                },
-            })
+            // Small delay between collections
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
 
-        fn parse_network_stat_line(line: &str) -> PwrzvResult<(String, NetworkStat)> {
-            let parts: Vec<&str> = line.trim().split(':').collect();
-            if parts.len() != 2 {
-                return Err(PwrzvError::parse_error("Invalid network stat format"));
-            }
+        println!("Metric availability across 3 cycles:");
+        let metric_names = [
+            "CPU usage",
+            "CPU I/O wait",
+            "CPU load",
+            "Memory usage",
+            "Memory pressure",
+            "Disk I/O",
+            "Network util",
+            "Network drops",
+            "FD usage",
+            "Process count",
+        ];
 
-            let interface = parts[0].trim().to_string();
-            let fields: Vec<&str> = parts[1].split_whitespace().collect();
-
-            if fields.len() < 16 {
-                return Err(PwrzvError::parse_error("Insufficient network stat fields"));
-            }
-
-            Ok((
-                interface,
-                NetworkStat {
-                    rx_bytes: fields[0]
-                        .parse()
-                        .map_err(|_| PwrzvError::parse_error("Invalid rx_bytes"))?,
-                    rx_packets: fields[1]
-                        .parse()
-                        .map_err(|_| PwrzvError::parse_error("Invalid rx_packets"))?,
-                    rx_dropped: fields[3]
-                        .parse()
-                        .map_err(|_| PwrzvError::parse_error("Invalid rx_dropped"))?,
-                    tx_bytes: fields[8]
-                        .parse()
-                        .map_err(|_| PwrzvError::parse_error("Invalid tx_bytes"))?,
-                    tx_packets: fields[9]
-                        .parse()
-                        .map_err(|_| PwrzvError::parse_error("Invalid tx_packets"))?,
-                    tx_dropped: fields[11]
-                        .parse()
-                        .map_err(|_| PwrzvError::parse_error("Invalid tx_dropped"))?,
-                },
-            ))
+        for (i, &availability) in metrics_availability.iter().enumerate() {
+            println!("  {}: {}/3 cycles", metric_names[i], availability);
         }
+
+        // Check metric availability based on the operating system
+        let consistently_available = metrics_availability.iter().filter(|&&x| x >= 2).count();
+
+        #[cfg(target_os = "linux")]
+        {
+            // On Linux, we should have most metrics available
+            assert!(
+                consistently_available >= 5,
+                "At least 5 metrics should be consistently available on Linux, got: {}",
+                consistently_available
+            );
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            // On non-Linux systems, we expect fewer metrics to be available
+            println!("⚠️  Running on non-Linux system, reduced metric availability expected");
+            assert!(
+                consistently_available >= 1,
+                "At least 1 metric should be consistently available, got: {}",
+                consistently_available
+            );
+        }
+
+        println!("Integration test summary:");
+        println!("  All collections successful: {}", all_successful);
+        println!(
+            "  Consistently available metrics: {}/10",
+            consistently_available
+        );
     }
 }

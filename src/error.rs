@@ -37,42 +37,46 @@ pub enum PwrzvError {
 
 impl PwrzvError {
     /// Create unsupported platform error
-    pub fn unsupported_platform(platform: &str) -> Self {
+    #[allow(dead_code)]
+    pub(crate) fn unsupported_platform(platform: &str) -> Self {
         PwrzvError::UnsupportedPlatform {
             platform: platform.to_string(),
         }
     }
 
     /// Create parsing error
-    pub fn parse_error(detail: &str) -> Self {
+    pub(crate) fn parse_error(detail: &str) -> Self {
         PwrzvError::ParseError {
             detail: detail.to_string(),
         }
     }
 
     /// Create resource access error
-    pub fn resource_access_error(resource: &str) -> Self {
+    pub(crate) fn resource_access_error(resource: &str) -> Self {
         PwrzvError::ResourceAccessError {
             resource: resource.to_string(),
         }
     }
 
     /// Create calculation error
-    pub fn calculation_error(detail: &str) -> Self {
+    #[allow(dead_code)]
+    pub(crate) fn calculation_error(detail: &str) -> Self {
         PwrzvError::CalculationError {
             detail: detail.to_string(),
         }
     }
 
     /// Create collection error (alias for resource access error)
-    pub fn collection_error(detail: &str) -> Self {
+    #[allow(dead_code)]
+    pub(crate) fn collection_error(detail: &str) -> Self {
         PwrzvError::ResourceAccessError {
             resource: detail.to_string(),
         }
     }
 
     /// Create invalid value error
-    pub fn invalid_value(detail: &str) -> Self {
+    #[allow(dead_code)]
+    pub(crate) fn invalid_value(detail: &str) -> Self {
         PwrzvError::InvalidValue {
             detail: detail.to_string(),
         }

@@ -119,13 +119,12 @@ pwrzv --detailed yaml
 ### Library Usage
 
 ```rust
-use pwrzv::{PowerReserveCalculator, PwrzvError};
+use pwrzv::{get_power_reserve_level_direct, PwrzvError};
 
-fn main() -> Result<(), PwrzvError> {
-    let calculator = PowerReserveCalculator::new();
-    let metrics = calculator.collect_metrics()?;
-    let score = calculator.calculate_power_reserve(&metrics)?;
-    println!("Power Reserve Score: {}", score);
+#[tokio::main]
+async fn main() -> Result<(), PwrzvError> {
+    let level = get_power_reserve_level_direct().await?;
+    println!("Power Reserve Level: {}/5", level);
     Ok(())
 }
 ```
@@ -133,33 +132,34 @@ fn main() -> Result<(), PwrzvError> {
 #### Detailed Analysis
 
 ```rust
-use pwrzv::{PowerReserveCalculator, PwrzvError};
+use pwrzv::{get_power_reserve_level_with_details_direct, PowerReserveLevel, PwrzvError};
 
-fn main() -> Result<(), PwrzvError> {
-    let calculator = PowerReserveCalculator::new();
-    let metrics = calculator.collect_metrics()?;
-    let detailed = calculator.calculate_detailed_score(&metrics)?;
+#[tokio::main]
+async fn main() -> Result<(), PwrzvError> {
+    let (level, details) = get_power_reserve_level_with_details_direct().await?;
+    let power_level = PowerReserveLevel::try_from(level)?;
     
-    println!("Overall Score: {} ({})", detailed.final_score, detailed.level);
-    println!("Bottlenecks: {}", detailed.bottleneck);
-    println!("CPU Score: {}", detailed.component_scores.cpu);
+    println!("Power Reserve: {} ({})", level, power_level);
+    println!("Detailed metrics:");
+    for (metric, value) in details {
+        println!("  {}: {:.3}", metric, value);
+    }
     Ok(())
 }
 ```
 
-#### Custom Configuration
+#### Platform Support Check
 
 ```rust
-use pwrzv::{PowerReserveCalculator, SigmoidConfig, PwrzvError};
+use pwrzv::{check_platform, get_platform_name, PwrzvError};
 
 fn main() -> Result<(), PwrzvError> {
-    let mut config = SigmoidConfig::default();
-    config.cpu_threshold = 0.8;  // More sensitive CPU threshold
+    println!("Running on: {}", get_platform_name());
     
-    let calculator = PowerReserveCalculator::with_config(config);
-    let metrics = calculator.collect_metrics()?;
-    let score = calculator.calculate_power_reserve(&metrics)?;
-    println!("Power Reserve Score: {}", score);
+    match check_platform() {
+        Ok(()) => println!("Platform is supported!"),
+        Err(e) => eprintln!("Platform not supported: {}", e),
+    }
     Ok(())
 }
 ```
@@ -338,8 +338,8 @@ Run the included examples:
 # Basic usage example
 cargo run --example basic_usage
 
-# Detailed analysis with different configurations
-PWRZV_JSON_OUTPUT=1 cargo run --example detailed_analysis
+# Detailed metrics analysis example
+cargo run --example detailed_metrics
 ```
 
 ## 🧪 Testing

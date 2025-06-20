@@ -7,10 +7,12 @@ use std::process;
 
 use clap::{Arg, ArgMatches, Command};
 use pwrzv::{
-    PowerReserveLevel, PwrzvError, check_platform, get_platform_name, get_power_reserve_level,
-    get_power_reserve_level_with_details,
+    PowerReserveLevel, PwrzvError, check_platform, get_platform_name,
+    get_power_reserve_level_direct, get_power_reserve_level_with_details_direct,
 };
 use std::collections::HashMap;
+use std::time::Duration;
+use tokio::time::sleep;
 
 /// Application version
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -42,6 +44,8 @@ async fn main() {
 /// - `--detailed [FORMAT]`: Show detailed component scores
 ///   - `FORMAT` can be: `text` (default), `json`, or `yaml`
 ///   - If no format is specified, defaults to `text`
+/// - `--interval/-t SECONDS`: Set output refresh interval (default: 3 seconds)
+/// - `--once`: Show output once and exit
 fn build_cli() -> Command {
     Command::new("pwrzv")
         .version(VERSION)
@@ -49,7 +53,9 @@ fn build_cli() -> Command {
         .long_about(
             "pwrzv monitors system resources and provides power reserve level assessment, \
              inspired by the Power Reserve gauge from Rolls-Royce cars.\
-             \n\nSupported platforms: Linux, macOS",
+             \n\nSupported platforms: Linux, macOS\
+             \n\nBy default, pwrzv runs continuously and updates output every 3 seconds.\
+             \nUse --once for single-shot output.",
         )
         .arg(
             Arg::new("detailed")
@@ -60,6 +66,20 @@ fn build_cli() -> Command {
                 .value_parser(["text", "json", "yaml"])
                 .num_args(0..=1)
                 .default_missing_value("text"),
+        )
+        .arg(
+            Arg::new("interval")
+                .short('t')
+                .long("interval")
+                .value_name("SECONDS")
+                .help("Set output refresh interval in seconds (default: 3)")
+                .value_parser(clap::value_parser!(u64)),
+        )
+        .arg(
+            Arg::new("once")
+                .long("once")
+                .help("Show output once and exit")
+                .action(clap::ArgAction::SetTrue),
         )
 }
 
@@ -80,11 +100,10 @@ fn build_cli() -> Command {
 /// # Behavior
 ///
 /// 1. Checks platform compatibility (Linux/macOS only)
-/// 2. If `--detailed` flag is provided:
-///    - Collects detailed system metrics
-///    - Outputs results in specified format (text/json/yaml)
-/// 3. If no flags provided:
-///    - Returns simple numeric power reserve level (1-5)
+/// 2. If `--once` flag: runs single-shot mode
+/// 3. If continuous mode (default):
+///    - Outputs results every specified interval
+///    - Collects metrics in real-time for each output
 ///
 /// # Platform Support
 ///
@@ -99,16 +118,64 @@ async fn run(matches: ArgMatches) -> Result<(), PwrzvError> {
         process::exit(1);
     }
 
-    // Choose output method based on whether detailed information is needed
-    if let Some(format) = matches.get_one::<String>("detailed") {
-        let (level, details) = get_power_reserve_level_with_details().await?;
-        output_detailed_result(format, PowerReserveLevel::try_from(level)?, &details)?;
-    } else {
-        let level = get_power_reserve_level().await?;
-        println!("{}", level as u8);
+    println!("✅ Platform check passed for: {}", get_platform_name());
+
+    // Check if single-shot mode is requested
+    if matches.get_flag("once") {
+        // Choose output method based on whether detailed information is needed
+        if let Some(format) = matches.get_one::<String>("detailed") {
+            let (level, details) = get_power_reserve_level_with_details_direct().await?;
+            output_detailed_result(format, PowerReserveLevel::try_from(level)?, &details)?;
+        } else {
+            let level = get_power_reserve_level_direct().await?;
+            println!("{level}");
+        }
+        return Ok(());
     }
 
-    Ok(())
+    // Continuous monitoring mode
+    let output_interval = matches.get_one::<u64>("interval").copied().unwrap_or(3); // Default 3 second
+
+    eprintln!(
+        "🔄 Starting continuous monitoring (interval: {}s)",
+        output_interval
+    );
+    eprintln!("💡 Press Ctrl+C to stop");
+    eprintln!();
+
+    loop {
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+
+        // Clear screen for better readability if detailed mode
+        if matches.get_one::<String>("detailed").is_some() {
+            print!("\x1b[2J\x1b[H"); // Clear screen and move cursor to top
+            println!("{now}"); // Show current time
+        }
+
+        // Collect and output current status
+        if let Some(format) = matches.get_one::<String>("detailed") {
+            match get_power_reserve_level_with_details_direct().await {
+                Ok((level, details)) => {
+                    output_detailed_result(format, PowerReserveLevel::try_from(level)?, &details)?;
+                }
+                Err(e) => {
+                    eprintln!("{now} ❌ Failed to collect metrics: {e}");
+                }
+            }
+        } else {
+            match get_power_reserve_level_direct().await {
+                Ok(level) => {
+                    println!("{now} Power Reserve: {level}");
+                }
+                Err(e) => {
+                    eprintln!("{now} ❌ Failed to collect metrics: {e}");
+                }
+            }
+        }
+
+        // Wait for next output interval
+        sleep(Duration::from_secs(output_interval)).await;
+    }
 }
 
 /// Output detailed result
@@ -140,20 +207,20 @@ async fn run(matches: ArgMatches) -> Result<(), PwrzvError> {
 ///
 /// # Metric Categories
 ///
-/// The output includes two categories of metrics:
-/// - **Ratios** (suffix `_ratio`): Raw utilization values (0.0-1.0)
-/// - **Scores** (suffix `_score`): Sigmoid-transformed pressure scores (0.0-1.0)
+/// The output includes pressure scores (0.0-1.0) for each available metric.
+/// All values are sigmoid-transformed from raw system metrics.
 fn output_detailed_result(
     format: &str,
     level: PowerReserveLevel,
-    details: &HashMap<String, f32>,
+    details: &HashMap<String, u8>,
 ) -> Result<(), PwrzvError> {
     match format {
         "json" => {
             let output = serde_json::json!({
                 "power_reserve_level": level as u8,
                 "platform": get_platform_name(),
-                "detailed_metrics": details
+                "detailed_metrics": details,
+                "timestamp": chrono::Utc::now().to_rfc3339()
             });
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
         }
@@ -161,30 +228,47 @@ fn output_detailed_result(
             let output = serde_json::json!({
                 "power_reserve_level": level as u8,
                 "platform": get_platform_name(),
-                "detailed_metrics": details
+                "detailed_metrics": details,
+                "timestamp": chrono::Utc::now().to_rfc3339()
             });
             println!("{}", serde_yaml::to_string(&output).unwrap());
         }
         _ => {
-            // 默认文本格式
-            println!("=== System Power Reserve Detailed Analysis ===");
+            // Default text format
+            println!("=== System Power Reserve Analysis ===");
             println!("Platform: {}", get_platform_name());
-            println!("Power Reserve Level: {}", level as u8);
+            println!(
+                "Power Reserve Level: {} ({}) {}",
+                level as u8,
+                level,
+                score_to_emoji(level as u8)
+            );
+            println!(
+                "Timestamp: {}",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+            );
             println!();
 
-            println!("=== System Metrics ===");
-            print_metrics_section(details, "_ratio");
-
             println!("=== Pressure Scores ===");
-            print_metrics_section(details, "_score");
+            print_metrics_section(details);
 
             println!();
             match level {
-                PowerReserveLevel::Abundant => println!("✅ System resources are abundant"),
-                PowerReserveLevel::High => println!("✅ System resources are sufficient"),
-                PowerReserveLevel::Medium => println!("⚠️ System resources are moderate"),
-                PowerReserveLevel::Low => println!("⚠️ System resources are limited"),
-                PowerReserveLevel::Critical => println!("🚨 System load is high"),
+                PowerReserveLevel::Abundant => {
+                    println!("System resources are abundant - excellent performance")
+                }
+                PowerReserveLevel::High => {
+                    println!("System resources are sufficient - good performance")
+                }
+                PowerReserveLevel::Medium => {
+                    println!("System resources are moderate - monitor for issues")
+                }
+                PowerReserveLevel::Low => {
+                    println!("System resources are limited - optimization recommended")
+                }
+                PowerReserveLevel::Critical => {
+                    println!("System load is critical - immediate action required")
+                }
             }
         }
     }
@@ -194,38 +278,51 @@ fn output_detailed_result(
 
 /// Print metrics section
 ///
-/// Helper function to print a section of metrics with consistent formatting.
+/// Helper function to print metrics with consistent formatting.
 ///
 /// # Arguments
 ///
 /// * `details` - HashMap containing all metrics
-/// * `suffix` - Filter suffix to select metrics (e.g., "_ratio", "_score")
 ///
 /// # Behavior
 ///
-/// - Filters metrics by suffix
 /// - Sorts metrics alphabetically by name
-/// - Formats ratio metrics as percentages
-/// - Formats score metrics as decimal values
+/// - Formats all metrics as pressure scores (0.0-1.0)
 /// - Adds appropriate visual spacing
-fn print_metrics_section(details: &HashMap<String, f32>, suffix: &str) {
-    let mut metrics: Vec<(String, f32)> = details
+fn print_metrics_section(details: &HashMap<String, u8>) {
+    let mut metrics: Vec<(String, u8)> = details
         .iter()
-        .filter(|(key, _)| key.ends_with(suffix))
         .map(|(key, value)| (key.clone(), *value))
         .collect();
 
-    metrics.sort_by(|a, b| a.0.cmp(&b.0));
+    // Sort by score (low to high), then by name for consistent ordering
+    metrics.sort_by(|a, b| {
+        match a.1.cmp(&b.1) {
+            std::cmp::Ordering::Equal => a.0.cmp(&b.0), // Same score, sort by name
+            other => other, // Different scores, sort by score (low to high)
+        }
+    });
 
     for (key, value) in metrics {
-        let display_name = key.replace('_', " ").replace(suffix, "");
-        if suffix == "_ratio" {
-            println!("{display_name}: {value:.3} ({:.1}%)", value * 100.0);
-        } else {
-            println!("{display_name}: {value:.3}");
-        }
+        println!("{key} {}", score_to_emoji(value));
     }
+
+    if details.is_empty() {
+        println!("(No metrics available)");
+    }
+
     println!();
+}
+
+fn score_to_emoji(score: u8) -> &'static str {
+    match score {
+        5 => "🎉",
+        4 => "✌️",
+        3 => "👌",
+        2 => "⚠️",
+        1 => "🚨",
+        _ => "❓",
+    }
 }
 
 #[cfg(test)]
@@ -258,5 +355,23 @@ mod tests {
             .unwrap();
 
         assert_eq!(matches.get_one::<String>("detailed").unwrap(), "text");
+    }
+
+    #[test]
+    fn test_cli_interval_parsing() {
+        let app = build_cli();
+        let matches = app
+            .try_get_matches_from(vec!["pwrzv", "--interval", "10"])
+            .unwrap();
+
+        assert_eq!(matches.get_one::<u64>("interval").unwrap(), &10);
+    }
+
+    #[test]
+    fn test_cli_once_flag() {
+        let app = build_cli();
+        let matches = app.try_get_matches_from(vec!["pwrzv", "--once"]).unwrap();
+
+        assert!(matches.get_flag("once"));
     }
 }

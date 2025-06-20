@@ -2,10 +2,10 @@
 name = "pwrzv"
 version = "0.4.0"
 edition = "2024"
-description = "A Rolls-Royce–inspired performance reserve meter for Linux systems"
+description = "A Rolls-Royce–inspired performance reserve meter for Linux and macOS systems"
 license = "MIT"
 repository = "https://github.com/kookyleo/pwrzv"
-keywords = ["system", "monitoring", "linux", "performance"]
+keywords = ["system", "monitoring", "linux", "macos", "performance"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
@@ -21,7 +21,8 @@ clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
-thiserror = "1.0"
-tokio = { version = "1.0", features = ["rt", "rt-multi-thread", "macros", "time"] }
+thiserror = "2"
+tokio = { version = "1.0", features = ["rt", "rt-multi-thread", "macros", "time", "process"] }
+chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]

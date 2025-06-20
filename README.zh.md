@@ -118,13 +118,12 @@ pwrzv --detailed yaml
 ### 库使用
 
 ```rust
-use pwrzv::{PowerReserveCalculator, PwrzvError};
+use pwrzv::{get_power_reserve_level_direct, PwrzvError};
 
-fn main() -> Result<(), PwrzvError> {
-    let calculator = PowerReserveCalculator::new();
-    let metrics = calculator.collect_metrics()?;
-    let score = calculator.calculate_power_reserve(&metrics)?;
-    println!("Power Reserve Score: {}", score);
+#[tokio::main]
+async fn main() -> Result<(), PwrzvError> {
+    let level = get_power_reserve_level_direct().await?;
+    println!("动力余量等级: {}/5", level);
     Ok(())
 }
 ```
@@ -132,33 +131,34 @@ fn main() -> Result<(), PwrzvError> {
 #### 详细分析
 
 ```rust
-use pwrzv::{PowerReserveCalculator, PwrzvError};
+use pwrzv::{get_power_reserve_level_with_details_direct, PowerReserveLevel, PwrzvError};
 
-fn main() -> Result<(), PwrzvError> {
-    let calculator = PowerReserveCalculator::new();
-    let metrics = calculator.collect_metrics()?;
-    let detailed = calculator.calculate_detailed_score(&metrics)?;
+#[tokio::main]
+async fn main() -> Result<(), PwrzvError> {
+    let (level, details) = get_power_reserve_level_with_details_direct().await?;
+    let power_level = PowerReserveLevel::try_from(level)?;
     
-    println!("Overall Score: {} ({})", detailed.final_score, detailed.level);
-    println!("Bottlenecks: {}", detailed.bottleneck);
-    println!("CPU Score: {}", detailed.component_scores.cpu);
+    println!("动力余量: {} ({})", level, power_level);
+    println!("详细指标:");
+    for (metric, value) in details {
+        println!("  {}: {:.3}", metric, value);
+    }
     Ok(())
 }
 ```
 
-#### 自定义配置
+#### 平台支持检查
 
 ```rust
-use pwrzv::{PowerReserveCalculator, SigmoidConfig, PwrzvError};
+use pwrzv::{check_platform, get_platform_name, PwrzvError};
 
 fn main() -> Result<(), PwrzvError> {
-    let mut config = SigmoidConfig::default();
-    config.cpu_threshold = 0.8;  // 更敏感的 CPU 阈值
+    println!("运行平台: {}", get_platform_name());
     
-    let calculator = PowerReserveCalculator::with_config(config);
-    let metrics = calculator.collect_metrics()?;
-    let score = calculator.calculate_power_reserve(&metrics)?;
-    println!("Power Reserve Score: {}", score);
+    match check_platform() {
+        Ok(()) => println!("平台支持!"),
+        Err(e) => eprintln!("平台不支持: {}", e),
+    }
     Ok(())
 }
 ```
@@ -175,7 +175,7 @@ fn main() -> Result<(), PwrzvError> {
 
 ### 工作原理
 
-1. **资源收集**: 各平台有差异，对 linux 而言为 `/proc` 文件系统收集指标
+1. **资源收集**: 平台特定的指标收集（Linux: `/proc` 文件系统, macOS: 系统命令）
 2. **标准化**: 将原始指标转换为 0-1 范围
 3. **Sigmoid 变换**: 应用可配置的阈值和曲线
 4. **瓶颈检测**: 取最小分数（最差资源）
@@ -337,8 +337,8 @@ pwrzv --detailed
 # 基本使用示例
 cargo run --example basic_usage
 
-# 带不同配置的详细分析
-PWRZV_JSON_OUTPUT=1 cargo run --example detailed_analysis
+# 详细指标分析示例
+cargo run --example detailed_metrics
 ```
 
 ## 🧪 测试
