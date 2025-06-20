@@ -131,10 +131,17 @@ if ! cargo clippy --all-targets --all-features -- -D warnings; then
     exit 1
 fi
 
-# 4.1 Run +nightly clippy
-print_info "4.1. Running nightly Clippy check..."
-if ! cargo +nightly clippy --all-targets --all-features -- -D warnings; then
-    print_error "Nightly Clippy check failed, please fix warnings and retry"
+# # 4.1 Run +nightly clippy
+# print_info "4.1. Running nightly Clippy check..."
+# if ! cargo +nightly clippy --all-targets --all-features -- -D warnings; then
+#     print_error "Nightly Clippy check failed, please fix warnings and retry"
+#     exit 1
+# fi
+
+# 4.1 Run +beta clippy
+print_info "4.1. Running beta Clippy check..."
+if ! cargo +beta clippy --all-targets --all-features -- -D warnings; then
+    print_error "Beta Clippy check failed, please fix warnings and retry"
     exit 1
 fi
 
