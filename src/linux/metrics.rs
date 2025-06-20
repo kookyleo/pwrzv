@@ -565,7 +565,7 @@ impl LinuxSystemMetrics {
         let mut total_packets = 0u64;
         let mut total_dropped = 0u64;
 
-        for (_interface, stat) in stats {
+        for stat in stats.values() {
             let interface_packets = stat.rx_packets + stat.tx_packets;
             let interface_dropped = stat.rx_dropped + stat.tx_dropped;
 
