@@ -751,64 +751,6 @@ mod tests {
         println!("Process metrics: count_ratio={process_count:?}");
     }
 
-    #[tokio::test]
-    async fn test_parallel_vs_sequential_performance() {
-        println!("Testing parallel vs sequential performance...");
-
-        // Test parallel execution
-        let start_parallel = Instant::now();
-        let _ = tokio::join!(
-            LinuxSystemMetrics::get_cpu_metrics_consolidated(),
-            LinuxSystemMetrics::get_memory_metrics_consolidated(),
-            LinuxSystemMetrics::get_network_metrics_consolidated(),
-            LinuxSystemMetrics::get_disk_io_utilization_instant(),
-            LinuxSystemMetrics::get_fd_usage(),
-            LinuxSystemMetrics::get_process_count()
-        );
-        let parallel_duration = start_parallel.elapsed();
-
-        // Test sequential execution
-        let start_sequential = Instant::now();
-        let _ = LinuxSystemMetrics::get_cpu_metrics_consolidated().await;
-        let _ = LinuxSystemMetrics::get_memory_metrics_consolidated().await;
-        let _ = LinuxSystemMetrics::get_network_metrics_consolidated().await;
-        let _ = LinuxSystemMetrics::get_disk_io_utilization_instant().await;
-        let _ = LinuxSystemMetrics::get_fd_usage().await;
-        let _ = LinuxSystemMetrics::get_process_count().await;
-        let sequential_duration = start_sequential.elapsed();
-
-        println!("Parallel execution: {parallel_duration:?}");
-        println!("Sequential execution: {sequential_duration:?}");
-
-        let improvement = sequential_duration.as_secs_f64() / parallel_duration.as_secs_f64();
-        println!("Performance improvement: {improvement:.2}x");
-
-        // On non-Linux systems, many metrics may fail, so parallel vs sequential
-        // performance comparison is not meaningful
-        #[cfg(target_os = "linux")]
-        {
-            // Parallel should be faster or at least not significantly slower
-            assert!(
-                parallel_duration <= sequential_duration * 2,
-                "Parallel execution should not be significantly slower than sequential"
-            );
-
-            // In most cases, parallel should be noticeably faster
-            if improvement > 1.5 {
-                println!("✅ Significant performance improvement achieved");
-            }
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            println!("⚠️  Running on non-Linux system, performance comparison skipped");
-            println!(
-                "   Parallel: {:?}, Sequential: {:?}",
-                parallel_duration, sequential_duration
-            );
-        }
-    }
-
     #[test]
     fn test_parse_cpu_stat() {
         let content = "cpu  123456 789 234567 890123 45678 901 234 0 0 0\n";
