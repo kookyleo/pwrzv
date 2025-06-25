@@ -7,8 +7,8 @@ use std::process;
 
 use clap::{Arg, ArgMatches, Command};
 use pwrzv::{
-    PowerReserveLevel, PwrzvError, check_platform, get_platform_name,
-    get_power_reserve_level_direct, get_power_reserve_level_with_details_direct,
+    PwrzvError, check_platform, get_platform_name, get_power_reserve_level_direct,
+    get_power_reserve_level_with_details_direct,
 };
 use std::collections::HashMap;
 use std::time::Duration;
@@ -125,10 +125,10 @@ async fn run(matches: ArgMatches) -> Result<(), PwrzvError> {
         // Choose output method based on whether detailed information is needed
         if let Some(format) = matches.get_one::<String>("detailed") {
             let (level, details) = get_power_reserve_level_with_details_direct().await?;
-            output_detailed_result(format, PowerReserveLevel::try_from(level)?, &details)?;
+            output_detailed_result(format, level, &details)?;
         } else {
             let level = get_power_reserve_level_direct().await?;
-            println!("{level}");
+            println!("{level:.2}");
         }
         return Ok(());
     }
@@ -153,7 +153,7 @@ async fn run(matches: ArgMatches) -> Result<(), PwrzvError> {
         if let Some(format) = matches.get_one::<String>("detailed") {
             match get_power_reserve_level_with_details_direct().await {
                 Ok((level, details)) => {
-                    output_detailed_result(format, PowerReserveLevel::try_from(level)?, &details)?;
+                    output_detailed_result(format, level, &details)?;
                 }
                 Err(e) => {
                     eprintln!("{now} ❌ Failed to collect metrics: {e}");
@@ -162,7 +162,7 @@ async fn run(matches: ArgMatches) -> Result<(), PwrzvError> {
         } else {
             match get_power_reserve_level_direct().await {
                 Ok(level) => {
-                    println!("{now} Power Reserve: {level}");
+                    println!("{now} Power Reserve: {level:.2}");
                 }
                 Err(e) => {
                     eprintln!("{now} ❌ Failed to collect metrics: {e}");
@@ -182,7 +182,7 @@ async fn run(matches: ArgMatches) -> Result<(), PwrzvError> {
 /// # Arguments
 ///
 /// * `format` - Output format: "text", "json", or "yaml"
-/// * `level` - Power reserve level enum
+/// * `level` - Power reserve level as f32 (1.0-5.0)
 /// * `details` - HashMap containing detailed metric names and values
 ///
 /// # Returns
@@ -200,125 +200,110 @@ async fn run(matches: ArgMatches) -> Result<(), PwrzvError> {
 /// Machine-readable JSON with platform info, level, and all metrics.
 ///
 /// ## YAML Format
-/// YAML format suitable for configuration files and automation.
-///
-/// # Metric Categories
-///
-/// The output includes pressure scores (0.0-1.0) for each available metric.
-/// All values are sigmoid-transformed from raw system metrics.
+/// YAML format with structured data for configuration management.
 fn output_detailed_result(
     format: &str,
-    level: PowerReserveLevel,
-    details: &HashMap<String, u8>,
+    level: f32,
+    details: &HashMap<String, f32>,
 ) -> Result<(), PwrzvError> {
     match format {
         "json" => {
-            let output = serde_json::json!({
-                "power_reserve_level": level as u8,
+            let json_output = serde_json::json!({
                 "platform": get_platform_name(),
-                "detailed_metrics": details,
-                "timestamp": chrono::Utc::now().to_rfc3339()
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "power_reserve_level": level,
+                "level_description": format_level_description(level),
+                "metrics": details,
+                "total_metrics": details.len()
             });
-            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            println!("{}", serde_json::to_string_pretty(&json_output).unwrap());
         }
         "yaml" => {
-            let output = serde_json::json!({
-                "power_reserve_level": level as u8,
+            let yaml_data = serde_json::json!({
                 "platform": get_platform_name(),
-                "detailed_metrics": details,
-                "timestamp": chrono::Utc::now().to_rfc3339()
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "power_reserve_level": level,
+                "level_description": format_level_description(level),
+                "metrics": details,
+                "total_metrics": details.len()
             });
-            println!("{}", serde_yaml::to_string(&output).unwrap());
+            println!("{}", serde_yaml::to_string(&yaml_data).unwrap());
         }
+        // Default to text format for any other cases
         _ => {
-            // Default text format
-            println!("=== System Power Reserve Analysis ===");
-            println!("Platform: {}", get_platform_name());
+            println!("═══════════════════════════════════════════════════════════");
+            println!("🔋 Power Reserve Analysis");
+            println!("═══════════════════════════════════════════════════════════");
+            println!();
+
+            // Overall level with visual indicator
             println!(
-                "Power Reserve Level: {} ({}) {}",
-                level as u8,
+                "📊 Overall Power Reserve: {:.2} {}",
                 level,
-                score_to_emoji(level as u8)
+                format_level_emoji(level)
             );
-            println!(
-                "Timestamp: {}",
-                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-            );
+            println!("   Status: {}", format_level_description(level));
             println!();
 
-            println!("=== Pressure Scores ===");
-            print_metrics_section(details);
+            if !details.is_empty() {
+                print_metrics_section(details);
+            }
 
-            println!();
-            match level {
-                PowerReserveLevel::Abundant => {
-                    println!("System resources are abundant - excellent performance")
-                }
-                PowerReserveLevel::High => {
-                    println!("System resources are sufficient - good performance")
-                }
-                PowerReserveLevel::Medium => {
-                    println!("System resources are moderate - monitor for issues")
-                }
-                PowerReserveLevel::Low => {
-                    println!("System resources are limited - optimization recommended")
-                }
-                PowerReserveLevel::Critical => {
-                    println!("System load is critical - immediate action required")
-                }
+            println!("───────────────────────────────────────────────────────────");
+            println!("💡 Interpretation:");
+            println!("   • Scores range from 1.0 (Critical) to 5.0 (Abundant)");
+            println!("   • Overall level is determined by the lowest component score");
+            println!("   • Higher precision allows for more accurate assessment");
+
+            if level < 2.0 {
+                println!("   ⚠️  Consider optimizing system resources");
             }
         }
     }
-
     Ok(())
 }
 
-/// Print metrics section
-///
-/// Helper function to print metrics with consistent formatting.
-///
-/// # Arguments
-///
-/// * `details` - HashMap containing all metrics
-///
-/// # Behavior
-///
-/// - Sorts metrics alphabetically by name
-/// - Formats all metrics as pressure scores (0.0-1.0)
-/// - Adds appropriate visual spacing
-fn print_metrics_section(details: &HashMap<String, u8>) {
-    let mut metrics: Vec<(String, u8)> = details
-        .iter()
-        .map(|(key, value)| (key.clone(), *value))
-        .collect();
+/// Print metrics section for text format
+fn print_metrics_section(details: &HashMap<String, f32>) {
+    println!("📈 Component Metrics:");
 
-    // Sort by score (low to high), then by name for consistent ordering
-    metrics.sort_by(|a, b| {
-        match a.1.cmp(&b.1) {
-            std::cmp::Ordering::Equal => a.0.cmp(&b.0), // Same score, sort by name
-            other => other, // Different scores, sort by score (low to high)
-        }
-    });
+    let mut sorted_metrics: Vec<_> = details.iter().collect();
+    sorted_metrics.sort_by(|a, b| a.1.partial_cmp(b.1).unwrap());
 
-    for (key, value) in metrics {
-        println!("{key} {}", score_to_emoji(value));
+    for (key, value) in sorted_metrics {
+        let status_emoji = format_level_emoji(*value);
+        println!("   {key:<50}: {value:.3} {status_emoji}");
     }
-
-    if details.is_empty() {
-        println!("(No metrics available)");
-    }
-
     println!();
 }
 
-fn score_to_emoji(score: u8) -> &'static str {
-    match score {
-        5 => "🎉",
-        4 => "✌️",
-        3 => "👌",
-        2 => "⚠️",
-        1 => "🚨",
-        _ => "❓",
+/// Format level description based on numeric value
+fn format_level_description(level: f32) -> &'static str {
+    if level >= 4.0 {
+        "Abundant - Excellent performance"
+    } else if level >= 3.0 {
+        "High - Good performance"
+    } else if level >= 2.0 {
+        "Medium - Normal performance"
+    } else if level >= 1.0 {
+        "Low - Degraded performance"
+    } else {
+        "Critical - Poor performance"
+    }
+}
+
+/// Get emoji representation of level
+fn format_level_emoji(level: f32) -> &'static str {
+    if level >= 4.0 {
+        "🌟"
+    } else if level >= 3.0 {
+        "👌"
+    } else if level >= 2.0 {
+        "⚠️"
+    } else if level >= 1.0 {
+        "🔶"
+    } else {
+        "🚨"
     }
 }
 

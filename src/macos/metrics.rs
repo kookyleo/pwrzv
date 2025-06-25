@@ -89,16 +89,16 @@ impl MacSystemMetrics {
         let mut cpu_usage: Option<f32> = None;
         let mut load_ratio: Option<f32> = None;
 
-        // Parse CPU usage from top
-        #[allow(clippy::let_underscore_untyped)]
+        // Get CPU usage from top command
+        #[allow(clippy::collapsible_if)]
         if let Ok(top_output) = top_result {
             if let Ok(top_str) = str::from_utf8(&top_output.stdout) {
                 cpu_usage = Self::parse_top_cpu_usage(top_str);
             }
         }
 
-        // Parse load average and core count from sysctl
-        #[allow(clippy::let_underscore_untyped)]
+        // Get CPU load from sysctl
+        #[allow(clippy::collapsible_if)]
         if let Ok(sysctl_output) = sysctl_result {
             if let Ok(sysctl_str) = str::from_utf8(&sysctl_output.stdout) {
                 load_ratio = Self::parse_sysctl_load_and_cores(sysctl_str);
@@ -260,20 +260,24 @@ impl MacSystemMetrics {
         let mut fd_usage_ratio: Option<f32> = None;
         let mut process_count_ratio: Option<f32> = None;
 
-        // Parse process count from ps output
+        // Get process count and file descriptor metrics
+        #[allow(clippy::collapsible_if)]
         if let Ok(ps_output) = ps_result {
             if let Ok(ps_str) = str::from_utf8(&ps_output.stdout) {
                 let process_count = ps_str.lines().count().saturating_sub(1) as u32;
 
-                // Get actual FD usage from system
+                // Get file descriptor limits and usage
+                #[allow(clippy::collapsible_if)]
                 if let Ok(fd_limit_output) = fd_limit_result {
                     if let Ok(fd_limit_str) = str::from_utf8(&fd_limit_output.stdout) {
                         // Parse sysctl output: "kern.maxfiles: 245760"
+                        #[allow(clippy::collapsible_if)]
                         if let Some(colon_pos) = fd_limit_str.find(':') {
                             if let Ok(fd_limit) =
                                 fd_limit_str[colon_pos + 1..].trim().parse::<u32>()
                             {
-                                // Get actual FD count using lsof (count all open files)
+                                // Get actual open file descriptors using lsof
+                                #[allow(clippy::collapsible_if)]
                                 if let Ok(lsof_output) = tokio::process::Command::new("lsof")
                                     .arg("-n") // Don't resolve hostnames
                                     .arg("-P") // Don't resolve port names
@@ -283,9 +287,8 @@ impl MacSystemMetrics {
                                     if lsof_output.status.success() {
                                         // Use lossy conversion to handle non-UTF8 characters in file paths
                                         let lsof_str = String::from_utf8_lossy(&lsof_output.stdout);
-                                        // Count lines excluding header
-                                        let actual_fds =
-                                            lsof_str.lines().count().saturating_sub(1) as u32;
+                                        // Subtract 1 for header line
+                                        let actual_fds = lsof_str.lines().count().saturating_sub(1);
                                         fd_usage_ratio =
                                             Some((actual_fds as f32 / fd_limit as f32).min(1.0));
                                     }
@@ -295,10 +298,11 @@ impl MacSystemMetrics {
                     }
                 }
 
-                // Calculate process count ratio
-                #[allow(clippy::let_underscore_untyped)]
+                // Get process count ratio
+                #[allow(clippy::collapsible_if)]
                 if let Ok(sysctl_output) = sysctl_result {
                     if let Ok(sysctl_str) = str::from_utf8(&sysctl_output.stdout) {
+                        #[allow(clippy::collapsible_if)]
                         if let Some(colon_pos) = sysctl_str.find(':') {
                             if let Ok(max_processes) =
                                 sysctl_str[colon_pos + 1..].trim().parse::<u32>()
@@ -311,6 +315,7 @@ impl MacSystemMetrics {
                 }
             }
         }
+
         Ok((fd_usage_ratio, process_count_ratio))
     }
 
@@ -346,12 +351,14 @@ impl MacSystemMetrics {
                 for part in parts {
                     let part = part.trim();
                     if part.contains("% user") {
+                        #[allow(clippy::collapsible_if)]
                         if let Some(pct_str) = part.split('%').next() {
                             if let Some(num_str) = pct_str.split_whitespace().last() {
                                 user_pct = num_str.parse::<f32>().unwrap_or(0.0);
                             }
                         }
                     } else if part.contains("% sys") {
+                        #[allow(clippy::collapsible_if)]
                         if let Some(pct_str) = part.split('%').next() {
                             if let Some(num_str) = pct_str.split_whitespace().last() {
                                 sys_pct = num_str.parse::<f32>().unwrap_or(0.0);

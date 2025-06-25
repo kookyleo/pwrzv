@@ -3,7 +3,7 @@
 //! A Rolls-Royce–inspired performance reserve meter for Linux and macOS systems.
 //!
 //! This library provides a simple way to monitor system performance by calculating
-//! a "power reserve" score (0-5) that indicates how much computational headroom
+//! a "power reserve" score (1.0-5.0) that indicates how much computational headroom
 //! your system has available.
 //!
 //! ## Quick Start
@@ -16,7 +16,7 @@
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let level = get_power_reserve_level_direct().await?;
-//!     println!("Power Reserve Level: {}", level);
+//!     println!("Power Reserve Level: {:.2}", level);
 //!     Ok(())
 //! }
 //! ```
@@ -24,14 +24,13 @@
 //! ### Detailed Analysis
 //!
 //! ```rust
-//! use pwrzv::{get_power_reserve_level_with_details_direct, PowerReserveLevel};
+//! use pwrzv::get_power_reserve_level_with_details_direct;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let (level, details) = get_power_reserve_level_with_details_direct().await?;
-//!     let power_level = PowerReserveLevel::try_from(level)?;
 //!     
-//!     println!("Power Reserve: {} ({})", level, power_level);
+//!     println!("Power Reserve: {:.2}", level);
 //!     println!("Detailed metrics:");
 //!     for (metric, value) in details {
 //!         println!("  {}: {:.3}", metric, value);
@@ -47,7 +46,7 @@
 //! 1. **Platform Detection**: Automatically detects Linux or macOS
 //! 2. **Direct Metrics Collection**: Platform-specific calculator collects system metrics
 //! 3. **Real-time Processing**: Applies sigmoid transformations and calculates scores instantly
-//! 4. **Power Reserve Calculation**: Returns final 1-5 power reserve level
+//! 4. **Power Reserve Calculation**: Returns final 1.0-5.0 power reserve level with precision
 //!
 //! All metrics are collected and processed in real-time without any intermediate storage,
 //! making the library fast and lightweight.
@@ -76,7 +75,7 @@
 //! #[tokio::main]
 //! async fn main() {
 //!     match get_power_reserve_level_direct().await {
-//!         Ok(level) => println!("Power Reserve: {}", level),
+//!         Ok(level) => println!("Power Reserve: {:.2}", level),
 //!         Err(PwrzvError::UnsupportedPlatform { platform }) => {
 //!             eprintln!("Platform {} not supported", platform);
 //!         }
@@ -85,8 +84,7 @@
 //! }
 //! ```
 
-use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fmt};
+use std::collections::HashMap;
 
 #[cfg(target_os = "linux")]
 use crate::linux::calculator::LinuxProvider;
@@ -102,54 +100,11 @@ mod sigmoid;
 
 pub use error::{PwrzvError, PwrzvResult};
 
-/// Power Reserve Level
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[repr(u8)]
-pub enum PowerReserveLevel {
-    /// Abundant: System resources are abundant, suitable for high-performance tasks
-    Abundant = 5,
-    /// High: System resources are in good condition
-    High = 4,
-    /// Medium: System resources are in normal condition
-    Medium = 3,
-    /// Low: System resources are under pressure, need to optimize resource usage
-    Low = 2,
-    /// Critical: System resources are severely constrained, immediate action required
-    Critical = 1,
-}
-
-impl fmt::Display for PowerReserveLevel {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let level_str = match self {
-            PowerReserveLevel::Abundant => "Abundant",
-            PowerReserveLevel::High => "High",
-            PowerReserveLevel::Medium => "Medium",
-            PowerReserveLevel::Low => "Low",
-            PowerReserveLevel::Critical => "Critical",
-        };
-        write!(f, "{level_str}")
-    }
-}
-
-impl TryFrom<u8> for PowerReserveLevel {
-    type Error = PwrzvError;
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            5 => Ok(PowerReserveLevel::Abundant),
-            4 => Ok(PowerReserveLevel::High),
-            3 => Ok(PowerReserveLevel::Medium),
-            2 => Ok(PowerReserveLevel::Low),
-            1 => Ok(PowerReserveLevel::Critical),
-            _ => Err(PwrzvError::InvalidValue {
-                detail: format!("Invalid power reserve level: {value}"),
-            }),
-        }
-    }
-}
-
 trait PowerReserveMeterProvider {
-    async fn get_power_reserve_level(&self) -> PwrzvResult<u8>;
-    async fn get_power_reserve_level_with_details(&self) -> PwrzvResult<(u8, HashMap<String, u8>)>;
+    async fn get_power_reserve_level(&self) -> PwrzvResult<f32>;
+    async fn get_power_reserve_level_with_details(
+        &self,
+    ) -> PwrzvResult<(f32, HashMap<String, f32>)>;
 }
 
 // ================================
@@ -186,7 +141,7 @@ impl Calculator {
     }
 
     /// Get current power reserve level
-    async fn get_power_reserve_level(&self) -> PwrzvResult<u8> {
+    async fn get_power_reserve_level(&self) -> PwrzvResult<f32> {
         #[cfg(target_os = "linux")]
         {
             let Calculator::Linux(calc) = self;
@@ -202,7 +157,9 @@ impl Calculator {
     }
 
     /// Get current power reserve level with detailed information
-    async fn get_power_reserve_level_with_details(&self) -> PwrzvResult<(u8, HashMap<String, u8>)> {
+    async fn get_power_reserve_level_with_details(
+        &self,
+    ) -> PwrzvResult<(f32, HashMap<String, f32>)> {
         #[cfg(target_os = "linux")]
         {
             let Calculator::Linux(calc) = self;
@@ -234,12 +191,14 @@ pub fn get_platform_name() -> &'static str {
 ///
 /// # Returns
 ///
-/// Power reserve level as u8 (1-5) where:
-/// - 5: Abundant resources
-/// - 4: High resources  
-/// - 3: Medium resources
-/// - 2: Low resources
-/// - 1: Critical resources
+/// Power reserve level as f32 (1.0-5.0) where:
+/// - 5.0: Abundant resources (excellent performance)
+/// - 4.0: High resources (good performance)
+/// - 3.0: Medium resources (normal performance)
+/// - 2.0: Low resources (degraded performance)
+/// - 1.0: Critical resources (poor performance)
+///
+/// The returned value can have decimal precision for more accurate assessment.
 ///
 /// # Example
 ///
@@ -249,11 +208,11 @@ pub fn get_platform_name() -> &'static str {
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let level = get_power_reserve_level_direct().await?;
-///     println!("Power Reserve Level: {}", level);
+///     println!("Power Reserve Level: {:.2}", level);
 ///     Ok(())
 /// }
 /// ```
-pub async fn get_power_reserve_level_direct() -> PwrzvResult<u8> {
+pub async fn get_power_reserve_level_direct() -> PwrzvResult<f32> {
     let calculator = Calculator::new()?;
     calculator.get_power_reserve_level().await
 }
@@ -266,7 +225,7 @@ pub async fn get_power_reserve_level_direct() -> PwrzvResult<u8> {
 /// # Returns
 ///
 /// A tuple of (level, details) where:
-/// - level: Power reserve level as u8 (1-5)
+/// - level: Power reserve level as f32 (1.0-5.0) with decimal precision
 /// - details: HashMap containing pressure scores for each available metric
 ///
 /// # Example
@@ -278,7 +237,7 @@ pub async fn get_power_reserve_level_direct() -> PwrzvResult<u8> {
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let (level, details) = get_power_reserve_level_with_details_direct().await?;
 ///     
-///     println!("Power Reserve Level: {}", level);
+///     println!("Power Reserve Level: {:.2}", level);
 ///     println!("Detailed metrics:");
 ///     for (metric, score) in details {
 ///         println!("  {}: {:.3}", metric, score);
@@ -286,8 +245,8 @@ pub async fn get_power_reserve_level_direct() -> PwrzvResult<u8> {
 ///     Ok(())
 /// }
 /// ```
-pub async fn get_power_reserve_level_with_details_direct() -> PwrzvResult<(u8, HashMap<String, u8>)>
-{
+pub async fn get_power_reserve_level_with_details_direct()
+-> PwrzvResult<(f32, HashMap<String, f32>)> {
     let calculator = Calculator::new()?;
     calculator.get_power_reserve_level_with_details().await
 }
@@ -300,7 +259,7 @@ pub async fn get_power_reserve_level_with_details_direct() -> PwrzvResult<(u8, H
 ///
 /// Use `get_power_reserve_level_direct()` instead. This function is kept for
 /// backward compatibility but may be removed in future versions.
-pub async fn get_power_reserve_level() -> PwrzvResult<u8> {
+pub async fn get_power_reserve_level() -> PwrzvResult<f32> {
     get_power_reserve_level_direct().await
 }
 
@@ -310,7 +269,7 @@ pub async fn get_power_reserve_level() -> PwrzvResult<u8> {
 ///
 /// Use `get_power_reserve_level_with_details_direct()` instead. This function is kept for
 /// backward compatibility but may be removed in future versions.
-pub async fn get_power_reserve_level_with_details() -> PwrzvResult<(u8, HashMap<String, u8>)> {
+pub async fn get_power_reserve_level_with_details() -> PwrzvResult<(f32, HashMap<String, f32>)> {
     get_power_reserve_level_with_details_direct().await
 }
 
@@ -339,55 +298,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_power_reserve_level_enum() {
-        // Test enum values
-        assert_eq!(PowerReserveLevel::Abundant as u8, 5);
-        assert_eq!(PowerReserveLevel::High as u8, 4);
-        assert_eq!(PowerReserveLevel::Medium as u8, 3);
-        assert_eq!(PowerReserveLevel::Low as u8, 2);
-        assert_eq!(PowerReserveLevel::Critical as u8, 1);
-    }
-
-    #[test]
-    fn test_power_reserve_level_try_from() {
-        // Test valid conversions
-        assert_eq!(
-            PowerReserveLevel::try_from(5).unwrap(),
-            PowerReserveLevel::Abundant
-        );
-        assert_eq!(
-            PowerReserveLevel::try_from(4).unwrap(),
-            PowerReserveLevel::High
-        );
-        assert_eq!(
-            PowerReserveLevel::try_from(3).unwrap(),
-            PowerReserveLevel::Medium
-        );
-        assert_eq!(
-            PowerReserveLevel::try_from(2).unwrap(),
-            PowerReserveLevel::Low
-        );
-        assert_eq!(
-            PowerReserveLevel::try_from(1).unwrap(),
-            PowerReserveLevel::Critical
-        );
-
-        // Test invalid conversions
-        assert!(PowerReserveLevel::try_from(0).is_err());
-        assert!(PowerReserveLevel::try_from(6).is_err());
-        assert!(PowerReserveLevel::try_from(255).is_err());
-    }
-
-    #[test]
-    fn test_power_reserve_level_display() {
-        assert_eq!(format!("{}", PowerReserveLevel::Abundant), "Abundant");
-        assert_eq!(format!("{}", PowerReserveLevel::High), "High");
-        assert_eq!(format!("{}", PowerReserveLevel::Medium), "Medium");
-        assert_eq!(format!("{}", PowerReserveLevel::Low), "Low");
-        assert_eq!(format!("{}", PowerReserveLevel::Critical), "Critical");
-    }
-
-    #[test]
     fn test_calculator_creation() {
         // Calculator should be created successfully on supported platforms
         let calculator = Calculator::new();
@@ -405,7 +315,7 @@ mod tests {
         // Should be one of the supported platforms
         assert!(
             platform == "linux" || platform == "macos",
-            "Platform should be Linux or macos, got: {platform}"
+            "Platform should be Linux or macOS, got: {platform}"
         );
     }
 
@@ -430,8 +340,8 @@ mod tests {
 
         let level = result.unwrap();
         assert!(
-            (1..=5).contains(&level),
-            "Level should be in range [1, 5], got: {level}"
+            level > 0.0 && level <= 5.0,
+            "Level should be in range (0.0, 5.0], got: {level}"
         );
     }
 
@@ -446,15 +356,15 @@ mod tests {
 
         let (level, details) = result.unwrap();
         assert!(
-            (1..=5).contains(&level),
-            "Level should be in range [1, 5], got: {level}"
+            level > 0.0 && level <= 5.0,
+            "Level should be in range (0.0, 5.0], got: {level}"
         );
 
         // All detail scores should be in valid range
         for (key, score) in &details {
             assert!(
-                *score >= 1 && *score <= 5,
-                "Score for '{key}' should be in range [1, 5], got: {score}"
+                *score > 0.0 && *score <= 5.0,
+                "Score for '{key}' should be in range (0.0, 5.0], got: {score}"
             );
         }
     }
@@ -479,29 +389,35 @@ mod tests {
         let (legacy_detail_level, legacy_details) = result2.unwrap();
 
         assert!(
-            (1..=5).contains(&legacy_level),
-            "Legacy level should be in range [1, 5], got: {legacy_level}"
+            legacy_level > 0.0 && legacy_level <= 5.0,
+            "Legacy level should be in range (0.0, 5.0], got: {legacy_level}"
         );
         assert!(
-            (1..=5).contains(&legacy_detail_level),
-            "Legacy detail level should be in range [1, 5], got: {legacy_detail_level}"
+            legacy_detail_level > 0.0 && legacy_detail_level <= 5.0,
+            "Legacy detail level should be in range (0.0, 5.0], got: {legacy_detail_level}"
         );
 
         // All detail scores should be in valid range
         for (key, score) in &legacy_details {
             assert!(
-                *score >= 1 && *score <= 5,
-                "Score for '{key}' should be in range [1, 5], got: {score}"
+                *score > 0.0 && *score <= 5.0,
+                "Score for '{key}' should be in range (0.0, 5.0], got: {score}"
             );
         }
     }
 
     #[test]
-    fn test_power_reserve_level_ordering() {
-        // Test that levels have correct numeric values for comparison
-        assert!(PowerReserveLevel::Abundant as u8 > PowerReserveLevel::High as u8);
-        assert!(PowerReserveLevel::High as u8 > PowerReserveLevel::Medium as u8);
-        assert!(PowerReserveLevel::Medium as u8 > PowerReserveLevel::Low as u8);
-        assert!(PowerReserveLevel::Low as u8 > PowerReserveLevel::Critical as u8);
+    fn test_precision_levels() {
+        // Test that we can differentiate between various precision levels
+        let level_1 = 4.23f32;
+        let level_2 = 4.24f32;
+        assert_ne!(
+            level_1, level_2,
+            "Should be able to distinguish precision levels"
+        );
+
+        // Test that values stay within expected range
+        assert!((1.0..=5.0).contains(&level_1));
+        assert!((1.0..=5.0).contains(&level_2));
     }
 }

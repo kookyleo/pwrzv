@@ -132,14 +132,13 @@ async fn main() -> Result<(), PwrzvError> {
 #### Detailed Analysis
 
 ```rust
-use pwrzv::{get_power_reserve_level_with_details_direct, PowerReserveLevel, PwrzvError};
+use pwrzv::{get_power_reserve_level_with_details_direct, PwrzvError};
 
 #[tokio::main]
 async fn main() -> Result<(), PwrzvError> {
     let (level, details) = get_power_reserve_level_with_details_direct().await?;
-    let power_level = PowerReserveLevel::try_from(level)?;
     
-    println!("Power Reserve: {} ({})", level, power_level);
+    println!("Power Reserve: {:.2}/5.0", level);
     println!("Detailed metrics:");
     for (metric, value) in details {
         println!("  {}: {:.3}", metric, value);

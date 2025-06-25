@@ -1,8 +1,9 @@
 //! Detailed metrics example
 //!
-//! Demonstrates advanced usage of the pwrzv library with detailed system analysis
+//! Demonstrates advanced usage of the pwrzv library with detailed metrics
 
-use pwrzv::{PowerReserveLevel, PwrzvError, get_power_reserve_level_with_details_direct};
+use pwrzv::{PwrzvError, get_power_reserve_level_with_details_direct};
+use std::collections::HashMap;
 use std::time::Duration;
 
 #[tokio::main]
@@ -13,19 +14,11 @@ async fn main() -> Result<(), PwrzvError> {
     println!("🔍 Example 1: Current System Analysis");
     println!("{}", "=".repeat(50));
 
-    let (level_u8, details) = get_power_reserve_level_with_details_direct().await?;
-    let level = PowerReserveLevel::try_from(level_u8)?;
+    let (level, details) = get_power_reserve_level_with_details_direct().await?;
 
-    println!("Power Reserve Level: {level} ({level_u8}/5)");
+    println!("Power Reserve Level: {level:.3}/5.0");
 
-    let assessment = match level_u8 {
-        5 => "🌟 Excellent - System running at optimal performance",
-        4 => "✅ Good - System has sufficient resources available",
-        3 => "⚠️  Moderate - Monitor for potential bottlenecks",
-        2 => "🔶 High Load - Resource optimization recommended",
-        1 => "🚨 Critical - Immediate attention required",
-        _ => "❓ Unknown state",
-    };
+    let assessment = categorize_level(level);
     println!("   {assessment}");
 
     if !details.is_empty() {
@@ -63,18 +56,20 @@ async fn main() -> Result<(), PwrzvError> {
             .iter()
             .find(|(k, _)| k.contains("CPU Usage"))
             .map(|(_, v)| *v)
-            .unwrap_or(3);
+            .unwrap_or(3.0);
         let memory_score = details
             .iter()
             .find(|(k, _)| k.contains("Memory"))
             .map(|(_, v)| *v)
-            .unwrap_or(3);
+            .unwrap_or(3.0);
 
-        println!("   {sample_num:6} | {level:5} | CPU: {cpu_score}, Memory: {memory_score}");
+        println!(
+            "   {sample_num:6} | {level:5.2} | CPU: {cpu_score:.2}, Memory: {memory_score:.2}"
+        );
     }
 
     // Show if there's a trend
-    let levels: Vec<u8> = samples.iter().map(|(_, level, _)| *level).collect();
+    let levels: Vec<f32> = samples.iter().map(|(_, level, _)| *level).collect();
     if levels.len() >= 2 {
         let trend = if levels.last() > levels.first() {
             "📈 Improving"
@@ -93,9 +88,10 @@ async fn main() -> Result<(), PwrzvError> {
     let (_, final_details) = get_power_reserve_level_with_details_direct().await?;
 
     println!("💡 Metric Explanation:");
-    println!("   • Scores range from 1 (Critical) to 5 (Abundant)");
+    println!("   • Scores range from 1.0 (Critical) to 5.0 (Abundant)");
     println!("   • Higher values = better performance");
     println!("   • Lower values = more system stress");
+    println!("   • Decimal precision allows for nuanced assessment");
     println!();
 
     explain_top_metrics(&final_details);
@@ -105,12 +101,25 @@ async fn main() -> Result<(), PwrzvError> {
     println!("   • All data is collected in real-time - no background processes");
     println!("   • Metrics are platform-specific (Linux vs macOS)");
     println!("   • Use this for detailed diagnostics and monitoring");
+    println!("   • Focus on consistently low-scoring metrics for optimization");
 
     Ok(())
 }
 
+/// Categorize power reserve level
+fn categorize_level(level: f32) -> String {
+    let (status, emoji) = match level {
+        l if l >= 4.5 => ("Excellent - System running at optimal performance", "🌟"),
+        l if l >= 3.5 => ("Good - System has sufficient resources available", "✅"),
+        l if l >= 2.5 => ("Moderate - Monitor for potential bottlenecks", "⚠️"),
+        l if l >= 1.5 => ("High Load - Resource optimization recommended", "🔶"),
+        _ => ("Critical - Immediate attention required", "🚨"),
+    };
+    format!("{emoji} {status}")
+}
+
 /// Display metrics organized by category
-fn display_metrics_by_category(details: &std::collections::HashMap<String, u8>) {
+fn display_metrics_by_category(details: &HashMap<String, f32>) {
     let categories = [
         ("CPU Metrics", vec!["CPU Usage", "CPU Load", "CPU IO Wait"]),
         (
@@ -141,7 +150,7 @@ fn display_metrics_by_category(details: &std::collections::HashMap<String, u8>) 
 
             for (key, value) in sorted_metrics {
                 let status = get_score_status(*value);
-                println!("   {key:<35}: {value} ({status})");
+                println!("   {key:<35}: {value:.3} ({status})");
             }
         }
     }
@@ -159,15 +168,15 @@ fn display_metrics_by_category(details: &std::collections::HashMap<String, u8>) 
 
         for (key, value) in sorted_other {
             let status = get_score_status(*value);
-            println!("   {key:<35}: {value} ({status})");
+            println!("   {key:<35}: {value:.3} ({status})");
         }
     }
 }
 
 /// Explain the metrics with lowest scores (highest stress)
-fn explain_top_metrics(details: &std::collections::HashMap<String, u8>) {
+fn explain_top_metrics(details: &HashMap<String, f32>) {
     let mut sorted_metrics: Vec<_> = details.iter().collect();
-    sorted_metrics.sort_by_key(|(_, v)| *v); // Sort by score, lowest first
+    sorted_metrics.sort_by(|a, b| a.1.partial_cmp(b.1).unwrap()); // Sort by score, lowest first
 
     let stressed_metrics: Vec<_> = sorted_metrics.into_iter().take(3).collect();
 
@@ -175,20 +184,19 @@ fn explain_top_metrics(details: &std::collections::HashMap<String, u8>) {
         println!("🔍 Most Stressed Resources:");
         for (rank, (key, value)) in stressed_metrics.iter().enumerate() {
             let explanation = get_metric_explanation(key);
-            println!("   {}. {}: {} - {}", rank + 1, key, value, explanation);
+            println!("   {}. {}: {:.3} - {}", rank + 1, key, value, explanation);
         }
     }
 }
 
 /// Get score status description
-fn get_score_status(value: u8) -> &'static str {
+fn get_score_status(value: f32) -> &'static str {
     match value {
-        5 => "🌟 Abundant",
-        4 => "✅ High",
-        3 => "⚠️  Medium",
-        2 => "🔶 Low",
-        1 => "🚨 Critical",
-        _ => "❓ Unknown",
+        v if v >= 4.5 => "🌟 Abundant",
+        v if v >= 3.5 => "✅ High",
+        v if v >= 2.5 => "⚠️  Medium",
+        v if v >= 1.5 => "🔶 Low",
+        _ => "🚨 Critical",
     }
 }
 
@@ -201,20 +209,20 @@ fn get_metric_explanation(key: &str) -> &'static str {
     } else if key.contains("CPU IO Wait") {
         "CPU waiting for I/O operations"
     } else if key.contains("Memory Usage") {
-        "Physical memory utilization"
+        "RAM usage is elevated"
     } else if key.contains("Memory Compressed") {
-        "Memory compression pressure"
+        "Memory compression is active"
     } else if key.contains("Memory Pressure") {
-        "Overall memory pressure"
+        "System memory pressure detected"
     } else if key.contains("Disk IO") {
-        "Disk I/O activity level"
+        "Disk I/O utilization is high"
     } else if key.contains("Network") {
-        "Network traffic or errors"
+        "Network packet dropping detected"
     } else if key.contains("File Descriptors") {
-        "File descriptor usage"
+        "File descriptor usage is high"
     } else if key.contains("Process Count") {
-        "Number of running processes"
+        "Many processes are running"
     } else {
-        "System resource pressure"
+        "Resource utilization metric"
     }
 }
