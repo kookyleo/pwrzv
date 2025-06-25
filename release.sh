@@ -46,11 +46,14 @@ if ! git diff-index --quiet HEAD --; then
     exit 1
 fi
 
+# Get current version
+CURRENT_VERSION=$(grep '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+
 # Get version input
 echo
 print_info "=== pwrzv Release Script ==="
 echo
-read -p "Please enter new version number (e.g., 0.2.0): " NEW_VERSION
+read -p "Please enter new version number (e.g., 0.2.0) [current version: $CURRENT_VERSION]: " NEW_VERSION
 
 # Validate version format
 if ! [[ $NEW_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
