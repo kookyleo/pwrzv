@@ -145,7 +145,7 @@ impl MacProvider {
         Ok((3.0, details))
     }
     /// Convert sigmoid score to 5-point scale with decimal precision
-    /// [0, 1.0] -> [5.0, 1.0]
+    /// [0, 1.0] -> [5.0, 0.0]
     fn five_point_scale_with_decimal(score: f32) -> f32 {
         let score = 5.0 * (1.0 - score);
         // Retain 4 decimal places for precision

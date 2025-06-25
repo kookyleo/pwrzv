@@ -175,7 +175,7 @@ impl LinuxProvider {
     }
 
     /// Convert sigmoid score to 5-point scale with decimal precision
-    /// [0, 1.0] -> [5.0, 1.0]
+    /// [0, 1.0] -> [5.0, 0.0]
     fn five_point_scale_with_decimal(score: f32) -> f32 {
         let score = 5.0 * (1.0 - score);
         // Retain 4 decimal places for precision
@@ -197,7 +197,7 @@ mod tests {
         assert_eq!(LinuxProvider::five_point_scale_with_decimal(0.4), 3.0000); // 5 * (1 - 0.4) = 3
         assert_eq!(LinuxProvider::five_point_scale_with_decimal(0.6), 2.0000); // 5 * (1 - 0.6) = 2
         assert_eq!(LinuxProvider::five_point_scale_with_decimal(0.8), 1.0000); // 5 * (1 - 0.8) = 1
-        assert_eq!(LinuxProvider::five_point_scale_with_decimal(1.0), 1.0000); // 5 * (1 - 1) = 1
+        assert_eq!(LinuxProvider::five_point_scale_with_decimal(1.0), 0.0000); // 5 * (1 - 1) = 0
 
         // Test decimal precision
         let score = LinuxProvider::five_point_scale_with_decimal(0.1234);
