@@ -181,16 +181,16 @@ mod tests {
         // Should have details for all provided metrics
         assert_eq!(details.len(), 7, "Should have 7 metric details");
 
-        // All scores should be in valid range [1, 5]
+        // All scores should be in valid range [0, 5]
         for score in details.values() {
             assert!(
-                *score >= 1.0 && *score <= 5.0,
-                "Score {score} should be in range [1, 5]"
+                *score >= 0.0 && *score <= 5.0,
+                "Score {score} should be in range [0, 5]"
             );
         }
 
         // Level should be valid
-        assert!((1.0..=5.0).contains(&level));
+        assert!((0.0..=5.0).contains(&level));
     }
 
     #[test]

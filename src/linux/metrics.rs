@@ -160,6 +160,7 @@ impl LinuxSystemMetrics {
         let mut cpu_load: Option<f32> = None;
 
         // Parse CPU statistics
+        #[allow(clippy::collapsible_if)]
         if let Ok(stat_content) = stat_result {
             if let Some(stat) = Self::parse_cpu_stat(&stat_content) {
                 let total = stat.total();
@@ -172,6 +173,7 @@ impl LinuxSystemMetrics {
         }
 
         // Parse load average and combine with CPU core count
+        #[allow(clippy::collapsible_if)]
         if let (Ok(loadavg_content), Ok(cpuinfo_content)) = (loadavg_result, cpuinfo_result) {
             if let (Some(load_avg), Some(cpu_cores)) = (
                 Self::parse_load_average(&loadavg_content),
@@ -521,6 +523,7 @@ impl LinuxSystemMetrics {
             let parts: Vec<&str> = line.split_whitespace().collect();
 
             // iostat -x output format includes %util as the last column
+            #[allow(clippy::collapsible_if)]
             if parts.len() >= 14 {
                 if let Some(util_str) = parts.last() {
                     if let Ok(util_percent) = util_str.parse::<f32>() {

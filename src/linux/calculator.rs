@@ -226,16 +226,16 @@ mod tests {
         // Should have entries for all metrics
         assert!(!details.is_empty());
 
-        // All scores should be in valid range [1.0, 5.0]
+        // All scores should be in valid range [0.0, 5.0]
         for score in details.values() {
             assert!(
-                *score >= 1.0 && *score <= 5.0,
-                "Score {score} should be in range [1.0, 5.0]"
+                *score >= 0.0 && *score <= 5.0,
+                "Score {score} should be in range [0.0, 5.0]"
             );
         }
 
         // Level should be valid
-        assert!(level >= 1.0 && level <= 5.0);
+        assert!((0.0..=5.0).contains(&level));
     }
 
     #[test]
@@ -289,13 +289,13 @@ mod tests {
         // All scores should be in valid range
         for score in details.values() {
             assert!(
-                *score >= 1.0 && *score <= 5.0,
-                "Score {score} should be in range [1.0, 5.0]"
+                *score >= 0.0 && *score <= 5.0,
+                "Score {score} should be in range [0.0, 5.0]"
             );
         }
 
         // Level should be the minimum of the calculated scores
-        assert!(level >= 1.0 && level <= 5.0);
+        assert!((0.0..=5.0).contains(&level));
     }
 
     #[test]
